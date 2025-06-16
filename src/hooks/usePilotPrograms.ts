@@ -3,6 +3,8 @@ import { supabase } from '../lib/supabaseClient';
 import { useAuthStore } from '../stores/authStore';
 import { PilotProgram } from '../lib/types';
 import { toast } from 'react-toastify';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { withRetry } from '../utils/helpers';
 
 interface UsePilotProgramsResult {
   programs: PilotProgram[];
@@ -17,70 +19,62 @@ interface UsePilotProgramsResult {
 
 export const usePilotPrograms = (): UsePilotProgramsResult => {
   const { user } = useAuthStore();
-  const [programs, setPrograms] = useState<PilotProgram[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  const fetchPrograms = useCallback(async () => {
-    if (!user) {
-      setPrograms([]);
-      setIsLoading(false);
-      return;
-    }
+  // Use React Query for fetching programs
+  const programsQuery = useQuery({
+    queryKey: ['programs', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
 
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      // Query the pilot_programs table directly
-      // RLS policies will filter this to show only programs the user has access to:
-      // - Programs where the user is directly added via pilot_program_users
-      // - Programs belonging to the user's company
-      const { data, error: fetchError } = await supabase
-        .from('pilot_programs')
-        .select('*')
-        .order('name');
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('pilot_programs')
+          .select('*')
+          .order('name')
+      );
         
-      if (fetchError) throw fetchError;
-      
-      if (data) {
-        setPrograms(data);
-      }
-    } catch (err) {
-      console.error('Error fetching pilot programs:', err);
-      setError('Failed to fetch pilot programs');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [user]);
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!user,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
 
-  useEffect(() => {
-    fetchPrograms();
-  }, [fetchPrograms]);
-
+  // Use React Query for fetching a single program
   const fetchPilotProgram = async (programId: string): Promise<PilotProgram | null> => {
     try {
-      // Check if the user has access to this program
-      const { data, error } = await supabase
-        .from('pilot_programs')
-        .select('*')
-        .eq('program_id', programId)
-        .single();
+      // Check cache first
+      const cachedProgram = queryClient.getQueryData<PilotProgram>(['program', programId]);
+      if (cachedProgram) {
+        return cachedProgram;
+      }
+      
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('pilot_programs')
+          .select('*')
+          .eq('program_id', programId)
+          .single()
+      );
         
       if (error) {
         console.error('Error fetching pilot program:', error);
         return null;
       }
       
+      // Cache the result
+      queryClient.setQueryData(['program', programId], data);
       return data;
     } catch (err) {
-      console.error('Error fetching pilot program:', err);
+      console.error('Error in fetchPilotProgram:', err);
       return null;
     }
   };
 
-  const createProgram = async (programData: Omit<PilotProgram, 'program_id' | 'total_submissions' | 'total_sites' | 'created_at' | 'updated_at'>): Promise<PilotProgram | null> => {
-    try {
+  // Create program mutation
+  const createProgramMutation = useMutation({
+    mutationFn: async (programData: Omit<PilotProgram, 'program_id' | 'total_submissions' | 'total_sites' | 'created_at' | 'updated_at'>) => {
       // Calculate status based on date range
       const today = new Date();
       const startDate = new Date(programData.start_date);
@@ -89,94 +83,141 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
       const calculatedStatus = 
         (today >= startDate && today <= endDate) ? 'active' : 'inactive';
       
-      // Insert new pilot program
-      const { data, error } = await supabase
-        .from('pilot_programs')
-        .insert({
-          ...programData,
-          status: calculatedStatus,
-          total_submissions: 0,
-          total_sites: 0
-        })
-        .select()
-        .single();
-        
-      if (error) {
-        console.error('Program creation error:', error);
-        toast.error(`Failed to create program: ${error.message}`);
-        return null;
-      }
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('pilot_programs')
+          .insert({
+            ...programData,
+            status: calculatedStatus,
+            total_submissions: 0,
+            total_sites: 0
+          })
+          .select()
+          .single()
+      );
       
-      // The creator is automatically made an Admin via database trigger
-      
-      // Update local state
-      await fetchPrograms();
-      
+      if (error) throw error;
       return data;
-    } catch (err) {
-      console.error('Error creating program:', err);
-      toast.error('Failed to create program');
+    },
+    onSuccess: (data) => {
+      // Invalidate and refetch programs query
+      queryClient.invalidateQueries(['programs', user?.id]);
+      
+      // Add the new program to the cache
+      queryClient.setQueryData(['program', data.program_id], data);
+      
+      toast.success('Program created successfully');
+    },
+    onError: (error) => {
+      console.error('Error creating program:', error);
+      toast.error(`Failed to create program: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  // Update program mutation
+  const updateProgramMutation = useMutation({
+    mutationFn: async ({ programId, programData }: { programId: string, programData: Partial<PilotProgram> }) => {
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('pilot_programs')
+          .update(programData)
+          .eq('program_id', programId)
+          .select()
+          .single()
+      );
+      
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (data) => {
+      // Update the cache for this program
+      queryClient.setQueryData(['program', data.program_id], data);
+      
+      // Update the program in the programs list
+      queryClient.setQueryData<PilotProgram[]>(['programs', user?.id], (oldData) => {
+        if (!oldData) return [data];
+        return oldData.map(p => 
+          p.program_id === data.program_id ? data : p
+        );
+      });
+      
+      toast.success('Program updated successfully');
+    },
+    onError: (error) => {
+      console.error('Error updating program:', error);
+      toast.error(`Failed to update program: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  // Delete program mutation
+  const deleteProgramMutation = useMutation({
+    mutationFn: async (programId: string) => {
+      const { error } = await withRetry(() => 
+        supabase
+          .from('pilot_programs')
+          .delete()
+          .eq('program_id', programId)
+      );
+      
+      if (error) throw error;
+      return programId;
+    },
+    onSuccess: (programId) => {
+      // Remove the program from the cache
+      queryClient.removeQueries(['program', programId]);
+      
+      // Remove the program from the programs list
+      queryClient.setQueryData<PilotProgram[]>(['programs', user?.id], (oldData) => {
+        if (!oldData) return [];
+        return oldData.filter(p => p.program_id !== programId);
+      });
+      
+      toast.success('Program deleted successfully');
+    },
+    onError: (error) => {
+      console.error('Error deleting program:', error);
+      toast.error(`Failed to delete program: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  // Wrapper for createProgram
+  const createProgram = async (programData: Omit<PilotProgram, 'program_id' | 'total_submissions' | 'total_sites' | 'created_at' | 'updated_at'>): Promise<PilotProgram | null> => {
+    try {
+      return await createProgramMutation.mutateAsync(programData);
+    } catch (error) {
       return null;
     }
   };
 
+  // Wrapper for updateProgram
   const updateProgram = async (programId: string, programData: Partial<PilotProgram>): Promise<PilotProgram | null> => {
     try {
-      const { data, error } = await supabase
-        .from('pilot_programs')
-        .update(programData)
-        .eq('program_id', programId)
-        .select()
-        .single();
-        
-      if (error) {
-        console.error('Program update error:', error);
-        toast.error(`Failed to update program: ${error.message}`);
-        return null;
-      }
-      
-      // Update local state
-      setPrograms(prev => prev.map(p => 
-        p.program_id === programId ? data : p
-      ));
-      
-      return data;
-    } catch (err) {
-      console.error('Error updating program:', err);
-      toast.error('Failed to update program');
+      return await updateProgramMutation.mutateAsync({ programId, programData });
+    } catch (error) {
       return null;
     }
   };
 
+  // Wrapper for deleteProgram
   const deleteProgram = async (programId: string): Promise<boolean> => {
     try {
-      const { error } = await supabase
-        .from('pilot_programs')
-        .delete()
-        .eq('program_id', programId);
-        
-      if (error) {
-        console.error('Program deletion error:', error);
-        toast.error(`Failed to delete program: ${error.message}`);
-        return false;
-      }
-      
-      // Update local state
-      setPrograms(prev => prev.filter(p => p.program_id !== programId));
-      
+      await deleteProgramMutation.mutateAsync(programId);
       return true;
-    } catch (err) {
-      console.error('Error deleting program:', err);
-      toast.error('Failed to delete program');
+    } catch (error) {
       return false;
     }
   };
 
+  // Refetch programs
+  const refetchPrograms = useCallback(async () => {
+    await queryClient.refetchQueries(['programs', user?.id]);
+  }, [queryClient, user?.id]);
+
   return {
-    programs,
-    isLoading,
-    error,
-    refetchPrograms: fetchPrograms,
+    programs: programsQuery.data || [],
+    isLoading: programsQuery.isLoading,
+    error: programsQuery.error ? String(programsQuery.error) : null,
+    refetchPrograms,
     createProgram,
     updateProgram,
     deleteProgram,

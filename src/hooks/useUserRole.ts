@@ -3,6 +3,8 @@ import { supabase } from '../lib/supabaseClient';
 import { useAuthStore } from '../stores/authStore';
 import { UserRole } from '../lib/types';
 import useCompanies from './useCompanies';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { withRetry } from '../utils/helpers';
 
 interface UseUserRoleProps {
   programId?: string;
@@ -35,66 +37,70 @@ interface UseUserRoleResult {
 export const useUserRole = ({ programId }: UseUserRoleProps = {}): UseUserRoleResult => {
   const { user } = useAuthStore();
   const { isAdmin: isCompanyAdmin } = useCompanies();
-  const [role, setRole] = useState<UserRole | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(!!programId);
-  const [error, setError] = useState<string | null>(null);
-  const [isCompanyAdminForProgram, setIsCompanyAdminForProgram] = useState<boolean>(false);
+  const queryClient = useQueryClient();
 
-  const fetchUserRole = async () => {
-    if (!user || !programId) {
-      setRole(null);
-      setIsLoading(false);
-      return;
-    }
+  // Query for user's role in the program
+  const userRoleQuery = useQuery({
+    queryKey: ['userRole', programId, user?.id],
+    queryFn: async () => {
+      if (!user || !programId) return null;
 
-    setIsLoading(true);
-    setError(null);
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('pilot_program_users')
+          .select('role')
+          .eq('program_id', programId)
+          .eq('user_id', user.id)
+          .maybeSingle()
+      );
 
-    try {
-      const { data, error: roleError } = await supabase
-        .from('pilot_program_users')
-        .select('role')
-        .eq('program_id', programId)
-        .eq('user_id', user.id)
-        .maybeSingle();
+      if (error) throw error;
+      return data?.role as UserRole | null;
+    },
+    enabled: !!user && !!programId,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
 
-      if (roleError) {
-        console.error('Error fetching user role:', roleError);
-        setError('Failed to fetch user role');
-        setRole(null);
-      } else if (data) {
-        setRole(data.role as UserRole);
-      } else {
-        setRole(null);
-      }
+  // Query for company admin status for this program
+  const companyAdminForProgramQuery = useQuery({
+    queryKey: ['isCompanyAdminForProgram', programId, user?.id],
+    queryFn: async () => {
+      if (!user || !programId || !isCompanyAdmin) return false;
+      
+      const { data, error } = await withRetry(() => 
+        supabase.rpc('is_company_admin_for_program', { program_id_param: programId })
+      );
+      
+      if (error) throw error;
+      return !!data;
+    },
+    enabled: !!user && !!programId && !!isCompanyAdmin,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
 
-      // Check if user is a company admin for this program's company
-      if (isCompanyAdmin) {
-        const { data: isAdmin } = await supabase
-          .rpc('is_company_admin_for_program', { program_id_param: programId });
-        
-        setIsCompanyAdminForProgram(!!isAdmin);
-      } else {
-        setIsCompanyAdminForProgram(false);
-      }
-    } catch (err) {
-      console.error('Error in fetchUserRole:', err);
-      setError('An unexpected error occurred');
-      setRole(null);
-    } finally {
-      setIsLoading(false);
-    }
+  // Refresh role function
+  const refreshRole = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries(['userRole', programId, user?.id]),
+      queryClient.invalidateQueries(['isCompanyAdminForProgram', programId, user?.id])
+    ]);
   };
 
-  useEffect(() => {
-    fetchUserRole();
-  }, [user, programId, isCompanyAdmin]);
-
   // Derived state for role-based permissions
+  const role = userRoleQuery.data;
   const isAdmin = role === 'Admin';
   const isEditor = role === 'Edit';
   const isResponder = role === 'Respond';
   const isReadOnly = role === 'ReadOnly';
+  const isCompanyAdminForProgram = companyAdminForProgramQuery.data || false;
+
+  // Loading and error states
+  const isLoading = userRoleQuery.isLoading || companyAdminForProgramQuery.isLoading;
+  const error = userRoleQuery.error 
+    ? `Failed to fetch user role: ${String(userRoleQuery.error)}` 
+    : companyAdminForProgramQuery.error 
+      ? `Failed to check company admin status: ${String(companyAdminForProgramQuery.error)}` 
+      : null;
 
   // Permission checks
   const canCreateProgram = !!user; // Any authenticated user can create a program
@@ -111,8 +117,6 @@ export const useUserRole = ({ programId }: UseUserRoleProps = {}): UseUserRoleRe
   
   const canManageUsers = isAdmin || isCompanyAdminForProgram;
   const canViewAuditLog = isAdmin || isCompanyAdminForProgram;
-  
-  // New permission for managing site templates
   const canManageSiteTemplates = isAdmin || isEditor || isCompanyAdminForProgram;
 
   return {
@@ -136,7 +140,7 @@ export const useUserRole = ({ programId }: UseUserRoleProps = {}): UseUserRoleRe
     canViewAuditLog,
     canManageSiteTemplates,
     isCompanyAdminForProgram,
-    refreshRole: fetchUserRole
+    refreshRole
   };
 };
 
