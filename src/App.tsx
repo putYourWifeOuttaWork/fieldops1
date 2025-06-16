@@ -10,7 +10,6 @@ import ResetPasswordPage from './pages/ResetPasswordPage';
 import DeactivatedUserPage from './pages/DeactivatedUserPage';
 import ProtectedRoute from './components/routing/ProtectedRoute';
 import AppLayout from './components/layouts/AppLayout';
-import SyncStatus from './components/common/SyncStatus';
 import LoadingScreen from './components/common/LoadingScreen';
 import syncManager from './utils/syncManager';
 import ErrorPage from './pages/ErrorPage';
@@ -20,27 +19,19 @@ import sessionManager from './lib/sessionManager';
 import { useSessionStore } from './stores/sessionStore';
 import { usePilotProgramStore } from './stores/pilotProgramStore';
 import NetworkStatusIndicator from './components/common/NetworkStatusIndicator';
-import { retry } from './utils/helpers';
 
 // Lazy load pages to improve initial load time
 const HomePage = lazy(() => import('./pages/HomePage'));
 const PilotProgramsPage = lazy(() => import('./pages/PilotProgramsPage'));
 const SitesPage = lazy(() => import('./pages/SitesPage'));
 const SubmissionsPage = lazy(() => import('./pages/SubmissionsPage'));
-const SubmissionEditPage = lazy(() => import('./pages/SubmissionEditPage'));
-const NewSubmissionPage = lazy(() => import('./pages/NewSubmissionPage'));
+const SubmissionEditPage = lazy(() => import('./pages/SubmissionEditPage')); // Add this line
+const NewSubmissionPage = lazy(() => import('./pages/NewSubmissionPage')); // Add this line
 const SiteTemplateManagementPage = lazy(() => import('./pages/SiteTemplateManagementPage'));
 const UserProfilePage = lazy(() => import('./pages/UserProfilePage'));
 const AuditLogPage = lazy(() => import('./pages/AuditLogPage'));
 const CompanyManagementPage = lazy(() => import('./pages/CompanyManagementPage'));
 const UserAuditPage = lazy(() => import('./pages/UserAuditPage'));
-
-// Custom loading component for lazy-loaded routes
-const LazyLoadingFallback = () => (
-  <div className="min-h-[200px] flex items-center justify-center">
-    <div className="w-8 h-8 border-2 border-t-2 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
-  </div>
-);
 
 function App() {
   const navigate = useNavigate();
@@ -49,18 +40,13 @@ function App() {
   const [loading, setLoading] = useState(true);
   const isOnline = useOnlineStatus();
   const [pendingCount, setPendingCount] = useState(0);
-  const [syncStatus, setSyncStatus] = useState<'synced' | 'syncing' | 'offline' | 'error' | 'reconnecting'>('synced');
-  const [syncProgress, setSyncProgress] = useState<{ current: number; total: number; failed?: number } | null>(null);
-  const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [authError, setAuthError] = useState<Error | null>(null);
   const [isUserDeactivated, setIsUserDeactivated] = useState(false);
-  const [isReconnecting, setIsReconnecting] = useState(false);
   
   // Session management from session store
   const { 
     setActiveSessions, 
     setIsLoading, 
-    activeSessions,
     setCurrentSessionId
   } = useSessionStore();
   
@@ -78,16 +64,9 @@ function App() {
       
       if (count > 0 && isOnline) {
         // Attempt to sync pending submissions
-        setSyncStatus('syncing');
-        const { success, pendingCount: remainingCount } = await syncManager.syncPendingSubmissions(
-          (current, total, failed) => {
-            setSyncProgress({ current, total, failed });
-          }
-        );
+        const { success, pendingCount: remainingCount } = await syncManager.syncPendingSubmissions();
         
         setPendingCount(remainingCount);
-        setSyncStatus(success ? 'synced' : 'error');
-        setSyncProgress(null);
       }
     };
     
@@ -101,17 +80,7 @@ function App() {
     
     autoSyncInitialized.current = true;
     
-    const cleanup = syncManager.setupAutoSync((current, total, failed) => {
-      setSyncStatus('syncing');
-      setSyncProgress({ current, total, failed });
-      
-      if (current === total) {
-        setTimeout(() => {
-          setSyncStatus('synced');
-          setSyncProgress(null);
-        }, 1000);
-      }
-    });
+    const cleanup = syncManager.setupAutoSync();
     
     return () => {
       cleanup();
@@ -131,22 +100,23 @@ function App() {
       if (document.visibilityState === 'visible' && user) {
         console.log('App has come back into focus, checking connection state');
         
-        // Set reconnecting state
-        setIsReconnecting(true);
-        setReconnectAttempts(prev => prev + 1);
-        
         try {
-          // Verify the session is still valid using retry logic
-          const checkSession = async () => {
-            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-            
-            if (sessionError) throw sessionError;
-            if (!sessionData.session) throw new Error('No session found');
-            
-            return sessionData;
-          };
+          // Verify the session is still valid
+          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
           
-          await retry(checkSession, 3, 500);
+          if (sessionError) {
+            console.error('Session error during reconnection:', sessionError);
+            return;
+          }
+          
+          if (!sessionData.session) {
+            console.log('No session found during reconnection check');
+            setUser(null);
+            setCurrentSessionId(null);
+            resetAll();
+            window.location.reload(true);
+            return;
+          }
           
           // If we're online, check for pending submissions and try to sync
           if (isOnline) {
@@ -156,16 +126,8 @@ function App() {
             
             if (count > 0) {
               // Attempt to sync pending submissions
-              setSyncStatus('syncing');
-              const { success, pendingCount: remainingCount } = await syncManager.syncPendingSubmissions(
-                (current, total, failed) => {
-                  setSyncProgress({ current, total, failed });
-                }
-              );
-              
+              const { pendingCount: remainingCount } = await syncManager.syncPendingSubmissions();
               setPendingCount(remainingCount);
-              setSyncStatus(success ? 'synced' : 'error');
-              setSyncProgress(null);
             }
           }
           
@@ -185,33 +147,9 @@ function App() {
           }
           
         } catch (error) {
-          console.error('Error during reconnection process (attempt ' + reconnectAttempts + '):', error);
-          
-          // If we've tried multiple times, suggest a manual refresh
-          if (reconnectAttempts >= 2) {
-            toast.error('Error reconnecting to the server. Please use the refresh button or reload the page.');
-            
-            // Force reset the session if we've tried multiple times
-            setUser(null);
-            setCurrentSessionId(null);
-            resetAll();
-            window.location.reload();
-            return;
-          } else {
-            toast.error('Error reconnecting to the server. Trying again...');
-          }
-          
-          // Keep the reconnecting state so the user can see the refresh button
-          setSyncStatus('reconnecting');
-          setIsReconnecting(true);
+          console.error('Error during reconnection process:', error);
+          toast.error('Error reconnecting to the server. Please reload the page.');
           return;
-        } finally {
-          // Reset reconnecting state immediately, not after a delay
-          setIsReconnecting(false);
-          // Only reset reconnect attempts if we successfully reconnected
-          if (syncStatus !== 'reconnecting') {
-            setReconnectAttempts(0);
-          }
         }
       }
     };
@@ -222,23 +160,7 @@ function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       visibilityChangeInitialized.current = false;
     };
-  }, [user, isOnline, navigate, setUser, resetAll, setCurrentSessionId, setActiveSessions, setIsLoading, reconnectAttempts, syncStatus]);
-
-  // Update sync status based on online status
-  useEffect(() => {
-    if (isReconnecting) {
-      // Keep reconnecting status if we're actively reconnecting
-      setSyncStatus('reconnecting');
-    } else if (!isOnline && pendingCount > 0) { 
-      setSyncStatus('offline');
-    } else if (!isOnline) {
-      setSyncStatus('offline');
-    } else if (pendingCount > 0) {
-      setSyncStatus('syncing');
-    } else {
-      setSyncStatus('synced');
-    }
-  }, [isOnline, pendingCount, isReconnecting, reconnectAttempts]);
+  }, [user, isOnline, navigate, setUser, resetAll, setCurrentSessionId, setActiveSessions, setIsLoading]);
 
   // Check if user is deactivated and redirect if necessary
   const checkUserActive = async (userId: string) => {
@@ -268,15 +190,13 @@ function App() {
       try {
         console.log('Setting up auth...');
         
-        // Check initial session using retry logic
-        const getSession = async () => {
-          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-          
-          if (sessionError) throw sessionError;
-          return sessionData;
-        };
+        // Check initial session
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
         
-        const sessionData = await retry(getSession, 3, 500);
+        if (sessionError) {
+          console.error('Session error:', sessionError);
+          throw sessionError;
+        }
         
         if (sessionData.session) {
           console.log('User is authenticated:', sessionData.session.user.email);
@@ -375,28 +295,7 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen bg-gray-50">
-        {!isOnline && (
-          <SyncStatus 
-            status="offline" 
-            pendingCount={pendingCount}
-          />
-        )}
-        
-        {isOnline && (isReconnecting || syncStatus === 'syncing') && (
-          <SyncStatus 
-            status={isReconnecting ? 'reconnecting' : 'syncing'}
-            progress={syncProgress || undefined}
-          />
-        )}
-        
-        {isOnline && syncStatus === 'error' && (
-          <SyncStatus 
-            status="error" 
-            progress={syncProgress || undefined}
-          />
-        )}
-        
-        {/* Network Status Indicator - always visible when offline or when there are connection issues */}
+        {/* Network status indicator */}
         <NetworkStatusIndicator />
         
         <Routes>
@@ -409,62 +308,62 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<AppLayout />}>
               <Route path="/home" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <HomePage />
                 </Suspense>
               } />
               <Route path="/programs" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <PilotProgramsPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <SitesPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <SubmissionsPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/new-submission" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <NewSubmissionPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/submissions/:submissionId/edit" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <SubmissionEditPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/template" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <SiteTemplateManagementPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/audit-log" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <AuditLogPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/audit-log" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <AuditLogPage />
                 </Suspense>
               } />
               <Route path="/user-audit/:userId" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <UserAuditPage />
                 </Suspense>
               } />
               <Route path="/profile" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <UserProfilePage />
                 </Suspense>
               } />
               <Route path="/company" element={
-                <Suspense fallback={<LazyLoadingFallback />}>
+                <Suspense fallback={<LoadingScreen />}>
                   <CompanyManagementPage />
                 </Suspense>
               } />
