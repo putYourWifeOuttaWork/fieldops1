@@ -1,6 +1,7 @@
 import { Wifi, WifiOff, AlertTriangle, Loader2, X, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import Button from './Button';
+import classNames from 'classnames';
 
 interface SyncStatusProps {
   status: 'synced' | 'syncing' | 'offline' | 'error' | 'reconnecting';
@@ -115,16 +116,45 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
   const { bgColor, textColor, borderColor, icon, defaultMessage } = getStatusConfig();
   const displayMessage = message || defaultMessage;
 
+  // Special case for reconnecting status - show in center of screen
+  if (status === 'reconnecting') {
+    return (
+      <div 
+        className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center animate-fade-in"
+        data-testid={`sync-status-${status}`}
+      >
+        <div className={`${bgColor} ${textColor} ${borderColor} border rounded-lg shadow-lg p-6 max-w-md text-center`}>
+          <RefreshCw className="animate-spin mx-auto mb-4 h-10 w-10 text-error-600" />
+          <h3 className="text-xl font-semibold mb-2">Session Interrupted</h3>
+          <p className="mb-4">Your session has been disconnected. Please refresh to resume your work.</p>
+          <Button
+            variant="primary"
+            size="md"
+            icon={<RefreshCw size={16} />}
+            onClick={handleHardRefresh}
+            isLoading={isRefreshing}
+            className="w-full"
+            testId="sync-status-refresh"
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh Now'}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
-    <div 
-      className={`fixed top-0 left-0 right-0 z-50 ${bgColor} ${textColor} ${borderColor} border-b px-4 py-3 flex items-center justify-center space-x-2 animate-fade-in`}
+    <div
+      className={classNames(
+        `fixed top-0 left-0 right-0 z-50 border-b px-4 py-3 flex items-center justify-center space-x-2 animate-fade-in`,
+        bgColor, textColor, borderColor
+      )}
       data-testid={`sync-status-${status}`}
     >
       {icon}
       <span className="text-sm font-medium">{displayMessage}</span>
       
       {/* Action buttons - only show one at a time */}
-      {(status === 'reconnecting' || status === 'error') ? (
+      {status === 'error' ? (
         <Button
           variant="outline"
           size="sm"
