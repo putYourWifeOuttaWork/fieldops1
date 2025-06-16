@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { usePilotProgramStore } from '../stores/pilotProgramStore';
-import { Plus, Search, Building, Leaf, ArrowLeft, History } from 'lucide-react';
+import { Plus, Search, ArrowLeft, History } from 'lucide-react';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import LoadingScreen from '../components/common/LoadingScreen';
@@ -13,7 +14,6 @@ import PermissionModal from '../components/common/PermissionModal';
 import SiteCard from '../components/sites/SiteCard';
 import { Site } from '../lib/types';
 import { toast } from 'react-toastify';
-import { useQueryClient } from '@tanstack/react-query';
 import SiteCardSkeleton from '../components/sites/SiteCardSkeleton';
 import { debounce } from '../utils/helpers';
 
@@ -22,7 +22,8 @@ const SitesPage = () => {
   const { programId } = useParams<{ programId: string }>();
   const { 
     selectedProgram, 
-    setSelectedProgram, 
+    setSelectedProgram,
+    selectedSite, 
     setSelectedSite,
   } = usePilotProgramStore();
   const { sites, loading: sitesLoading, fetchSites, deleteSite } = useSites(programId);
@@ -34,6 +35,7 @@ const SitesPage = () => {
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
+  const [hasInitialized, setHasInitialized] = useState(false);
   const queryClient = useQueryClient();
   
   // Handle search with debounce
@@ -48,7 +50,7 @@ const SitesPage = () => {
   
   // Fetch selected program if not already in state
   useEffect(() => {
-    const loadPilotProgram = async () => {
+    const loadProgramAndSite = async () => {
       if (!programId) return;
       
       // Check if we already have the program in state
@@ -56,16 +58,18 @@ const SitesPage = () => {
         return;
       }
       
+      // Fetch the program data
       const program = await fetchPilotProgram(programId);
       if (program) {
         setSelectedProgram(program);
       } else {
-        navigate('/programs');
+        console.error('Failed to fetch program');
       }
     };
 
-    loadPilotProgram();
-  }, [programId, selectedProgram, setSelectedProgram, fetchPilotProgram, navigate]);
+    loadProgramAndSite();
+    setHasInitialized(true);
+  }, [programId, selectedProgram, setSelectedProgram, fetchPilotProgram]);
 
   const handleSiteSelect = (site: Site) => {
     setSelectedSite(site);
@@ -160,6 +164,21 @@ const SitesPage = () => {
     );
   }
 
+  if (!selectedProgram) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-gray-600">Program not found. Please select a program first.</p>
+        <Button
+          variant="primary"
+          className="mt-4"
+          onClick={() => navigate('/programs')}
+        >
+          Go to Programs
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="animate-fade-in">
       <div className="flex items-center mb-6">
@@ -176,11 +195,11 @@ const SitesPage = () => {
         </div>
         <div className="flex space-x-2">
           {canViewAuditLog && (
-            <Button
-              variant="outline"
+            <Button 
+              variant="outline" 
               icon={<History size={18} />}
               onClick={handleViewProgramAuditLog}
-              testId="view-program-audit-log"
+              testId="view-audit-log-button"
             >
               Audit Log
             </Button>
@@ -212,7 +231,7 @@ const SitesPage = () => {
 
       {sites.length === 0 ? (
         <div className="text-center py-12 bg-gray-50 rounded-lg border border-gray-200" data-testid="empty-sites-message">
-          <Building className="mx-auto h-12 w-12 text-gray-400" />
+          <ArrowLeft className="mx-auto h-12 w-12 text-gray-400" />
           <h3 className="mt-2 text-lg font-medium text-gray-900">No sites yet</h3>
           <p className="mt-1 text-sm text-gray-500">Get started by adding your first site to this program.</p>
           <div className="mt-6">
@@ -243,7 +262,7 @@ const SitesPage = () => {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="sites-grid">
-          {filteredSites.map(site => (
+          {filteredSites.map((site) => (
             <SiteCard
               key={site.site_id}
               site={site}
@@ -270,7 +289,6 @@ const SitesPage = () => {
       <PermissionModal
         isOpen={showPermissionModal}
         onClose={() => setShowPermissionModal(false)}
-        title="Insufficient Permissions"
         message={permissionMessage}
       />
     </div>

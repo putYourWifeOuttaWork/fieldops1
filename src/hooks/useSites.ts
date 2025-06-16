@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { Site, SubmissionDefaults, PetriDefaults, GasifierDefaults, VentPlacement, PrimaryFunction, ConstructionMaterial, InsulationType, HVACSystemType, IrrigationSystemType, LightingSystem, InteriorWorkingSurfaceType, MicrobialRiskZone, VentilationStrategy } from '../lib/types';
 import { toast } from 'react-toastify';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { withRetry } from '../utils/helpers';
+import { withRetry, fetchSitesByProgramId, fetchSiteById } from '../lib/api';
 
 // Interface for physical attributes and facility details
 interface SiteProperties {
@@ -36,28 +36,20 @@ interface SiteProperties {
 }
 
 export function useSites(programId?: string) {
-  const [sites, setSites] = useState<Site[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
-  const fetchSites = useCallback(async (pid?: string) => {
-    const id = pid || programId;
-    if (!id) return;
-    
-    console.log(`[useSites] fetchSites started for programId: ${id}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
+  // Use React Query to fetch sites instead of useState/useEffect
+  const sitesQuery = useQuery({
+    queryKey: ['sites', programId],
+    queryFn: async () => {
+      if (!programId) return [];
+      
+      console.log(`[useSites] fetchSites started for programId: ${programId}`);
+      
       const startTime = performance.now();
-      const { data, error } = await supabase
-        .from('sites')
-        .select('*')
-        .eq('program_id', id)
-        .order('name', { ascending: true });
-        
+      const { data, error } = await fetchSitesByProgramId(programId);
       const endTime = performance.now();
+      
       console.log(`[useSites] fetchSites query took ${(endTime - startTime).toFixed(2)}ms`);
       
       if (error) {
@@ -66,30 +58,28 @@ export function useSites(programId?: string) {
       }
       
       console.log(`[useSites] fetchSites succeeded, found ${data?.length || 0} sites`);
-      setSites(data || []);
-    } catch (err) {
-      console.error('[useSites] Error in fetchSites:', err);
-      setError('Failed to load sites');
-    } finally {
-      setLoading(false);
-      console.log('[useSites] fetchSites completed, loading state set to false');
-    }
-  }, [programId]);
+      return data || [];
+    },
+    enabled: !!programId,
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
 
+  // Get site function with caching
   const fetchSite = useCallback(async (siteId: string) => {
     console.log(`[useSites] fetchSite started for siteId: ${siteId}`);
-    setLoading(true);
-    setError(null);
     
     try {
+      // Check cache first
+      const cachedSite = queryClient.getQueryData<Site>(['site', siteId]);
+      if (cachedSite) {
+        console.log(`[useSites] fetchSite returning cached data for site: ${cachedSite.name}`);
+        return cachedSite;
+      }
+      
       const startTime = performance.now();
-      const { data, error } = await supabase
-        .from('sites')
-        .select('*')
-        .eq('site_id', siteId)
-        .single();
-        
+      const { data, error } = await fetchSiteById(siteId);
       const endTime = performance.now();
+      
       console.log(`[useSites] fetchSite query took ${(endTime - startTime).toFixed(2)}ms`);
       
       if (error) {
@@ -97,74 +87,80 @@ export function useSites(programId?: string) {
         throw error;
       }
       
+      // Cache the result
+      queryClient.setQueryData(['site', siteId], data);
+      
       console.log(`[useSites] fetchSite succeeded, retrieved site: ${data?.name}`);
-      return data;
+      return data as Site;
     } catch (err) {
       console.error('[useSites] Error in fetchSite:', err);
-      setError('Failed to load site');
-      return null;
-    } finally {
-      setLoading(false);
-      console.log('[useSites] fetchSite completed, loading state set to false');
+      throw err;
     }
-  }, []);
+  }, [queryClient]);
 
-  // Update site name
-  const updateSiteName = useCallback(async (siteId: string, newName: string): Promise<boolean> => {
-    console.log(`[useSites] updateSiteName started for siteId: ${siteId}, newName: ${newName}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
-      const { data, error } = await supabase
-        .from('sites')
-        .update({ name: newName })
-        .eq('site_id', siteId)
-        .select()
-        .single();
+  // Update site name mutation
+  const updateSiteNameMutation = useMutation({
+    mutationFn: async ({ siteId, newName }: { siteId: string; newName: string }) => {
+      console.log(`[useSites] updateSiteName started for siteId: ${siteId}, newName: ${newName}`);
       
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('sites')
+          .update({ name: newName })
+          .eq('site_id', siteId)
+          .select()
+          .single()
+      );
+    
       if (error) {
         console.error('[useSites] Error updating site name:', error);
         throw error;
       }
       
-      // Update the site in local state
-      setSites(prevSites => 
-        prevSites.map(site => 
-          site.site_id === siteId ? {...site, name: newName} : site
-        )
-      );
-      
       console.log(`[useSites] Site name updated successfully to: ${newName}`);
-      return true;
-    } catch (err) {
-      console.error('[useSites] Error in updateSiteName:', err);
-      setError(`Failed to update site name: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      return false;
-    } finally {
-      setLoading(false);
-      console.log('[useSites] updateSiteName completed, loading state set to false');
-    }
-  }, []);
-
-  // Update site weather defaults
-  const updateSiteWeatherDefaults = useCallback(async (
-    siteId: string,
-    temperature: number,
-    humidity: number,
-    weather: 'Clear' | 'Cloudy' | 'Rain'
-  ): Promise<boolean> => {
-    console.log(`[useSites] updateSiteWeatherDefaults started for siteId: ${siteId}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
-      const { data, error } = await supabase.rpc('update_site_weather_defaults', {
-        p_site_id: siteId,
-        p_temperature: temperature,
-        p_humidity: humidity,
-        p_weather: weather
+      return data as Site;
+    },
+    onSuccess: (updatedSite) => {
+      // Update cache for this site
+      queryClient.setQueryData(['site', updatedSite.site_id], updatedSite);
+      
+      // Update site in sites list
+      queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => {
+        if (!oldData) return [updatedSite];
+        return oldData.map(site => site.site_id === updatedSite.site_id ? updatedSite : site);
       });
+      
+      toast.success(`Site name updated to "${updatedSite.name}"`);
+    },
+    onError: (error) => {
+      console.error('[useSites] Error in updateSiteName:', error);
+      toast.error(`Failed to update site name: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  // Update site weather defaults mutation
+  const updateSiteWeatherDefaultsMutation = useMutation({
+    mutationFn: async ({
+      siteId,
+      temperature,
+      humidity,
+      weather
+    }: {
+      siteId: string;
+      temperature: number;
+      humidity: number;
+      weather: 'Clear' | 'Cloudy' | 'Rain';
+    }) => {
+      console.log(`[useSites] updateSiteWeatherDefaults started for siteId: ${siteId}`);
+      
+      const { data, error } = await withRetry(() => 
+        supabase.rpc('update_site_weather_defaults', {
+          p_site_id: siteId,
+          p_temperature: temperature,
+          p_humidity: humidity,
+          p_weather: weather
+        })
+      );
       
       if (error) {
         console.error('[useSites] Error updating site weather defaults:', error);
@@ -176,32 +172,29 @@ export function useSites(programId?: string) {
         throw new Error(data.message || 'Failed to update site weather defaults');
       }
       
-      console.log(`[useSites] Weather defaults updated successfully, result:`, data);
+      // Get the updated site
+      const { data: updatedSite, error: fetchError } = await fetchSiteById(siteId);
+      if (fetchError) throw fetchError;
       
-      // Update the site in local state to reflect changes
-      setSites(prevSites => 
-        prevSites.map(site => 
-          site.site_id === siteId 
-            ? {
-                ...site, 
-                default_temperature: temperature, 
-                default_humidity: humidity,
-                default_weather: weather
-              } 
-            : site
-        )
-      );
+      return updatedSite as Site;
+    },
+    onSuccess: (updatedSite) => {
+      // Update cache for this site
+      queryClient.setQueryData(['site', updatedSite.site_id], updatedSite);
       
-      return true;
-    } catch (err) {
-      console.error('[useSites] Error in updateSiteWeatherDefaults:', err);
-      setError(`Failed to update site weather defaults: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      return false;
-    } finally {
-      setLoading(false);
-      console.log('[useSites] updateSiteWeatherDefaults completed, loading state set to false');
+      // Update site in sites list
+      queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => {
+        if (!oldData) return [updatedSite];
+        return oldData.map(site => site.site_id === updatedSite.site_id ? updatedSite : site);
+      });
+      
+      toast.success('Weather defaults updated successfully');
+    },
+    onError: (error) => {
+      console.error('[useSites] Error in updateSiteWeatherDefaults:', error);
+      toast.error(`Failed to update site weather defaults: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  }, []);
+  });
 
   // Update site dimensions and gasifier density - IMPLEMENTED WITH MUTATION
   const updateSiteDimensionsAndDensityMutation = useMutation({
@@ -247,27 +240,16 @@ export function useSites(programId?: string) {
       }
       
       // Fetch the updated site
-      const { data: updatedSite, error: fetchError } = await supabase
-        .from('sites')
-        .select('*')
-        .eq('site_id', siteId)
-        .single();
-        
+      const { data: updatedSite, error: fetchError } = await fetchSiteById(siteId);
       if (fetchError) throw fetchError;
       
-      return updatedSite;
+      return updatedSite as Site;
     },
     onSuccess: (updatedSite) => {
-      // Update local state
-      setSites(prevSites => 
-        prevSites.map(site => 
-          site.site_id === updatedSite.site_id ? updatedSite : site
-        )
-      );
-      
-      // Update cache
+      // Update cache for this site
       queryClient.setQueryData(['site', updatedSite.site_id], updatedSite);
       
+      // Update site in sites list
       queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => 
         oldData ? oldData.map(site => 
           site.site_id === updatedSite.site_id ? updatedSite : site
@@ -281,32 +263,6 @@ export function useSites(programId?: string) {
       toast.error(`Failed to update site dimensions: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   });
-
-  const updateSiteDimensionsAndDensity = useCallback(async (
-    siteId: string,
-    length: number,
-    width: number,
-    height: number,
-    minEfficaciousGasifierDensity: number = 2000,
-    hasDeadZones: boolean = false,
-    numRegularlyOpenedPorts?: number
-  ): Promise<boolean> => {
-    try {
-      await updateSiteDimensionsAndDensityMutation.mutateAsync({
-        siteId,
-        length,
-        width,
-        height,
-        minEfficaciousGasifierDensity,
-        hasDeadZones,
-        numRegularlyOpenedPorts
-      });
-      return true;
-    } catch (err) {
-      console.error('[useSites] Error in updateSiteDimensionsAndDensity wrapper:', err);
-      return false;
-    }
-  }, [updateSiteDimensionsAndDensityMutation]);
 
   // Update site properties - IMPLEMENTED WITH MUTATION
   const updateSitePropertiesMutation = useMutation({
@@ -364,27 +320,16 @@ export function useSites(programId?: string) {
       }
       
       // Fetch the updated site
-      const { data: updatedSite, error: fetchError } = await supabase
-        .from('sites')
-        .select('*')
-        .eq('site_id', siteId)
-        .single();
-        
+      const { data: updatedSite, error: fetchError } = await fetchSiteById(siteId);
       if (fetchError) throw fetchError;
       
-      return updatedSite;
+      return updatedSite as Site;
     },
     onSuccess: (updatedSite) => {
-      // Update local state
-      setSites(prevSites => 
-        prevSites.map(site => 
-          site.site_id === updatedSite.site_id ? updatedSite : site
-        )
-      );
-      
-      // Update cache
+      // Update cache for this site
       queryClient.setQueryData(['site', updatedSite.site_id], updatedSite);
       
+      // Update site in sites list
       queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => 
         oldData ? oldData.map(site => 
           site.site_id === updatedSite.site_id ? updatedSite : site
@@ -399,36 +344,30 @@ export function useSites(programId?: string) {
     }
   });
 
-  const updateSiteProperties = useCallback(async (
-    siteId: string,
-    properties: SiteProperties
-  ): Promise<boolean> => {
-    try {
-      await updateSitePropertiesMutation.mutateAsync({ siteId, properties });
-      return true;
-    } catch (err) {
-      console.error('[useSites] Error in updateSiteProperties wrapper:', err);
-      return false;
-    }
-  }, [updateSitePropertiesMutation]);
-
-  const createSite = async (
-    name: string,
-    type: 'Greenhouse' | 'Storage' | 'Transport' | 'Production Facility',
-    pid?: string,
-    submissionDefaults?: SubmissionDefaults,
-    petriDefaults?: PetriDefaults[],
-    gasifierDefaults?: GasifierDefaults[],
-    siteProperties?: SiteProperties
-  ) => {
-    const id = pid || programId;
-    if (!id) return null;
-    
-    console.log(`[useSites] createSite started for programId: ${id}, name: ${name}, type: ${type}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
+  // Create site mutation
+  const createSiteMutation = useMutation({
+    mutationFn: async ({
+      name,
+      type,
+      pid,
+      submissionDefaults,
+      petriDefaults,
+      gasifierDefaults,
+      siteProperties
+    }: {
+      name: string;
+      type: 'Greenhouse' | 'Storage' | 'Transport' | 'Production Facility';
+      pid?: string;
+      submissionDefaults?: SubmissionDefaults;
+      petriDefaults?: PetriDefaults[];
+      gasifierDefaults?: GasifierDefaults[];
+      siteProperties?: SiteProperties;
+    }) => {
+      const id = pid || programId;
+      if (!id) throw new Error('Program ID is required');
+      
+      console.log(`[useSites] createSite started for programId: ${id}, name: ${name}, type: ${type}`);
+      
       // Log the template data being sent
       console.log('[useSites] Creating site with templates:', {
         submissionDefaults,
@@ -437,46 +376,47 @@ export function useSites(programId?: string) {
       });
       
       // Use the updated RPC function with template defaults and site properties
-      const { data, error } = await supabase.rpc('create_site_without_history', {
-        p_name: name,
-        p_type: type,
-        p_program_id: id,
-        p_submission_defaults: submissionDefaults ? submissionDefaults : null,
-        p_petri_defaults: petriDefaults ? petriDefaults : null,
-        p_gasifier_defaults: gasifierDefaults ? gasifierDefaults : null,
-        // Physical attributes
-        p_square_footage: siteProperties?.squareFootage,
-        p_cubic_footage: siteProperties?.cubicFootage,
-        p_num_vents: siteProperties?.numVents,
-        p_vent_placements: siteProperties?.ventPlacements,
-        // Facility details
-        p_primary_function: siteProperties?.primaryFunction,
-        p_construction_material: siteProperties?.constructionMaterial,
-        p_insulation_type: siteProperties?.insulationType,
-        // Environmental controls
-        p_hvac_system_present: siteProperties?.hvacSystemPresent,
-        p_hvac_system_type: siteProperties?.hvacSystemType,
-        p_irrigation_system_type: siteProperties?.irrigationSystemType,
-        p_lighting_system: siteProperties?.lightingSystem,
-        // New dimension fields
-        p_length: siteProperties?.length,
-        p_width: siteProperties?.width,
-        p_height: siteProperties?.height,
-        // New density fields
-        p_min_efficacious_gasifier_density_sqft_per_bag: siteProperties?.minEfficaciousGasifierDensity || 2000,
-        // New airflow dynamics fields
-        p_has_dead_zones: siteProperties?.hasDeadZones || false,
-        p_num_regularly_opened_ports: siteProperties?.numRegularlyOpenedPorts,
-        // New environmental fields
-        p_interior_working_surface_types: siteProperties?.interiorWorkingSurfaceTypes,
-        p_microbial_risk_zone: siteProperties?.microbialRiskZone || 'Medium',
-        p_quantity_deadzones: siteProperties?.quantityDeadzones,
-        p_ventilation_strategy: siteProperties?.ventilationStrategy
-      });
+      const { data, error } = await withRetry(() => 
+        supabase.rpc('create_site_without_history', {
+          p_name: name,
+          p_type: type,
+          p_program_id: id,
+          p_submission_defaults: submissionDefaults ? submissionDefaults : null,
+          p_petri_defaults: petriDefaults ? petriDefaults : null,
+          p_gasifier_defaults: gasifierDefaults ? gasifierDefaults : null,
+          // Physical attributes
+          p_square_footage: siteProperties?.squareFootage,
+          p_cubic_footage: siteProperties?.cubicFootage,
+          p_num_vents: siteProperties?.numVents,
+          p_vent_placements: siteProperties?.ventPlacements,
+          // Facility details
+          p_primary_function: siteProperties?.primaryFunction,
+          p_construction_material: siteProperties?.constructionMaterial,
+          p_insulation_type: siteProperties?.insulationType,
+          // Environmental controls
+          p_hvac_system_present: siteProperties?.hvacSystemPresent,
+          p_hvac_system_type: siteProperties?.hvacSystemType,
+          p_irrigation_system_type: siteProperties?.irrigationSystemType,
+          p_lighting_system: siteProperties?.lightingSystem,
+          // New dimension fields
+          p_length: siteProperties?.length,
+          p_width: siteProperties?.width,
+          p_height: siteProperties?.height,
+          // New density fields
+          p_min_efficacious_gasifier_density_sqft_per_bag: siteProperties?.minEfficaciousGasifierDensity || 2000,
+          // New airflow dynamics fields
+          p_has_dead_zones: siteProperties?.hasDeadZones || false,
+          p_num_regularly_opened_ports: siteProperties?.numRegularlyOpenedPorts,
+          // New environmental fields
+          p_interior_working_surface_types: siteProperties?.interiorWorkingSurfaceTypes,
+          p_microbial_risk_zone: siteProperties?.microbialRiskZone || 'Medium',
+          p_quantity_deadzones: siteProperties?.quantityDeadzones,
+          p_ventilation_strategy: siteProperties?.ventilationStrategy
+        })
+      );
       
       if (error) {
         console.error('[useSites] Error creating site:', error);
-        // Throw the actual error message from Supabase for better debugging
         throw new Error(`Failed to create site: ${error.message}`);
       }
       
@@ -488,90 +428,99 @@ export function useSites(programId?: string) {
       console.log(`[useSites] Site created with ID: ${data.site_id}`);
       
       // Fetch the newly created site to get all fields
-      const { data: siteData, error: fetchError } = await supabase
-        .from('sites')
-        .select('*')
-        .eq('site_id', data.site_id)
-        .single();
-        
+      const { data: siteData, error: fetchError } = await fetchSiteById(data.site_id);
+      
       if (fetchError) {
         console.error('Error fetching new site:', fetchError);
         throw new Error('Site created but failed to fetch details');
       }
       
-      console.log(`[useSites] Retrieved new site details: ${JSON.stringify(siteData)}`);
+      console.log(`[useSites] Retrieved new site details: ${siteData.name}`);
       
-      // Update local state
-      setSites(prevSites => [...prevSites, siteData]);
+      return siteData as Site;
+    },
+    onSuccess: (newSite) => {
+      // Add the new site to the cached sites list
+      queryClient.setQueryData<Site[]>(['sites', newSite.program_id], (oldData) => {
+        if (!oldData) return [newSite];
+        return [...oldData, newSite];
+      });
+      
+      // Cache the individual site
+      queryClient.setQueryData(['site', newSite.site_id], newSite);
       
       toast.success('Site created successfully!');
-      return siteData;
-    } catch (err) {
-      console.error('[useSites] Error in createSite:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error occurred';
-      setError(errorMessage);
-      toast.error(`Failed to create site: ${errorMessage}`);
-      return null;
-    } finally {
-      setLoading(false);
-      console.log('[useSites] createSite completed, loading state set to false');
+    },
+    onError: (error) => {
+      console.error('[useSites] Error in createSite:', error);
+      toast.error(`Failed to create site: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
-  };
+  });
 
-  // Delete site
-  const deleteSite = async (siteId: string): Promise<boolean> => {
-    console.log(`[useSites] deleteSite started for siteId: ${siteId}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
-      const { error } = await supabase
-        .from('sites')
-        .delete()
-        .eq('site_id', siteId);
-        
+  // Delete site mutation
+  const deleteSiteMutation = useMutation({
+    mutationFn: async (siteId: string) => {
+      console.log(`[useSites] deleteSite started for siteId: ${siteId}`);
+      
+      const { error } = await withRetry(() => 
+        supabase
+          .from('sites')
+          .delete()
+          .eq('site_id', siteId)
+      );
+      
       if (error) {
         console.error('[useSites] Error deleting site:', error);
         throw error;
       }
       
-      // Update local state by removing the deleted site
-      setSites(prevSites => prevSites.filter(site => site.site_id !== siteId));
-      
       console.log(`[useSites] Site deleted successfully`);
-      toast.success('Site deleted successfully!');
-      return true;
-    } catch (err) {
-      console.error('[useSites] Error in deleteSite:', err);
-      setError(`Failed to delete site: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      toast.error('Failed to delete site. Please try again.');
-      return false;
-    } finally {
-      setLoading(false);
-      console.log('[useSites] deleteSite completed, loading state set to false');
-    }
-  };
-
-  // Update site template defaults
-  const updateSiteTemplateDefaults = useCallback(async (
-    siteId: string,
-    submissionDefaults: SubmissionDefaults,
-    petriDefaults: PetriDefaults[],
-    gasifierDefaults: GasifierDefaults[] = [],
-    siteProperties?: SiteProperties
-  ) => {
-    console.log(`[useSites] updateSiteTemplateDefaults started for siteId: ${siteId}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
-      // Use the RPC function to update template defaults
-      const { data, error } = await supabase.rpc('update_site_template_defaults', {
-        p_site_id: siteId,
-        p_submission_defaults: submissionDefaults,
-        p_petri_defaults: petriDefaults,
-        p_gasifier_defaults: gasifierDefaults
+      return siteId;
+    },
+    onSuccess: (siteId) => {
+      // Remove the site from the sites list in cache
+      queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => {
+        if (!oldData) return [];
+        return oldData.filter(site => site.site_id !== siteId);
       });
+      
+      // Remove the individual site from cache
+      queryClient.removeQueries(['site', siteId]);
+      
+      toast.success('Site deleted successfully!');
+    },
+    onError: (error) => {
+      console.error('[useSites] Error in deleteSite:', error);
+      toast.error(`Failed to delete site: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  // Template mutations
+  const updateSiteTemplateDefaultsMutation = useMutation({
+    mutationFn: async ({
+      siteId,
+      submissionDefaults,
+      petriDefaults,
+      gasifierDefaults,
+      siteProperties
+    }: {
+      siteId: string;
+      submissionDefaults: SubmissionDefaults;
+      petriDefaults: PetriDefaults[];
+      gasifierDefaults: GasifierDefaults[];
+      siteProperties?: SiteProperties;
+    }) => {
+      console.log(`[useSites] updateSiteTemplateDefaults started for siteId: ${siteId}`);
+      
+      // Use the RPC function to update template defaults
+      const { data, error } = await withRetry(() => 
+        supabase.rpc('update_site_template_defaults', {
+          p_site_id: siteId,
+          p_submission_defaults: submissionDefaults,
+          p_petri_defaults: petriDefaults,
+          p_gasifier_defaults: gasifierDefaults
+        })
+      );
       
       if (error) {
         console.error('[useSites] Error updating site template defaults:', error);
@@ -583,82 +532,44 @@ export function useSites(programId?: string) {
         throw new Error(data.message || 'Failed to update site template defaults');
       }
       
-      console.log(`[useSites] Template defaults updated successfully, result:`, data);
-      
       // If we have site properties to update, do that as well
       if (siteProperties) {
-        const propertyUpdateResult = await updateSiteProperties(siteId, siteProperties);
-        
-        if (!propertyUpdateResult) {
-          console.error('[useSites] Failed to update site properties');
-          // Continue since template defaults were updated successfully
-        }
+        await updateSitePropertiesMutation.mutateAsync({ siteId, properties: siteProperties });
       }
       
-      // Update the site in local state to reflect changes
-      setSites(prevSites => 
-        prevSites.map(site => 
-          site.site_id === siteId 
-            ? {
-                ...site, 
-                submission_defaults: submissionDefaults, 
-                petri_defaults: petriDefaults,
-                gasifier_defaults: gasifierDefaults,
-                // Also update site properties if they were provided
-                ...(siteProperties && {
-                  square_footage: siteProperties.squareFootage,
-                  cubic_footage: siteProperties.cubicFootage,
-                  num_vents: siteProperties.numVents,
-                  vent_placements: siteProperties.ventPlacements,
-                  primary_function: siteProperties.primaryFunction,
-                  construction_material: siteProperties.constructionMaterial,
-                  insulation_type: siteProperties.insulationType,
-                  hvac_system_present: siteProperties.hvacSystemPresent,
-                  hvac_system_type: siteProperties.hvacSystemType,
-                  irrigation_system_type: siteProperties.irrigationSystemType,
-                  lighting_system: siteProperties.lightingSystem,
-                  // New dimension fields
-                  length: siteProperties.length,
-                  width: siteProperties.width,
-                  height: siteProperties.height,
-                  // New density fields
-                  min_efficacious_gasifier_density_sqft_per_bag: siteProperties.minEfficaciousGasifierDensity,
-                  // New airflow dynamics fields
-                  has_dead_zones: siteProperties.hasDeadZones,
-                  num_regularly_opened_ports: siteProperties.numRegularlyOpenedPorts,
-                  // New environmental fields
-                  interior_working_surface_types: siteProperties.interiorWorkingSurfaceTypes,
-                  microbial_risk_zone: siteProperties.microbialRiskZone,
-                  quantity_deadzones: siteProperties.quantityDeadzones,
-                  ventilation_strategy: siteProperties.ventilationStrategy
-                })
-              } 
-            : site
-        )
-      );
+      // Fetch the updated site
+      const { data: updatedSite, error: fetchError } = await fetchSiteById(siteId);
+      if (fetchError) throw fetchError;
       
-      return data;
-    } catch (err) {
-      console.error('[useSites] Error in updateSiteTemplateDefaults:', err);
-      setError(`Failed to update site template defaults: ${err instanceof Error ? err.message : 'Unknown error'}`);
-      throw err; // Rethrow so the caller can handle it
-    } finally {
-      setLoading(false);
-      console.log('[useSites] updateSiteTemplateDefaults completed, loading state set to false');
-    }
-  }, [updateSiteProperties]);
-
-  // Clear site template defaults
-  const clearSiteTemplateDefaults = useCallback(async (siteId: string): Promise<boolean> => {
-    console.log(`[useSites] clearSiteTemplateDefaults started for siteId: ${siteId}`);
-    setLoading(true);
-    setError(null);
-    
-    try {
-      // Use the RPC function to clear template defaults
-      const { data, error } = await supabase.rpc('clear_site_template_defaults', {
-        p_site_id: siteId
+      return updatedSite as Site;
+    },
+    onSuccess: (updatedSite) => {
+      // Update cache
+      queryClient.setQueryData(['site', updatedSite.site_id], updatedSite);
+      
+      queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => {
+        if (!oldData) return [updatedSite];
+        return oldData.map(site => site.site_id === updatedSite.site_id ? updatedSite : site);
       });
+      
+      toast.success('Site template updated successfully');
+    },
+    onError: (error) => {
+      console.error('[useSites] Error in updateSiteTemplateDefaults:', error);
+      toast.error(`Failed to update site template: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  const clearSiteTemplateDefaultsMutation = useMutation({
+    mutationFn: async (siteId: string) => {
+      console.log(`[useSites] clearSiteTemplateDefaults started for siteId: ${siteId}`);
+      
+      // Use the RPC function to clear template defaults
+      const { data, error } = await withRetry(() => 
+        supabase.rpc('clear_site_template_defaults', {
+          p_site_id: siteId
+        })
+      );
       
       if (error) {
         console.error('[useSites] Error clearing site template defaults:', error);
@@ -670,47 +581,162 @@ export function useSites(programId?: string) {
         throw new Error(data.message || 'Failed to clear site template defaults');
       }
       
-      console.log('[useSites] Template defaults cleared successfully');
+      // Fetch the updated site
+      const { data: updatedSite, error: fetchError } = await fetchSiteById(siteId);
+      if (fetchError) throw fetchError;
       
-      // Update the site in local state to reflect changes
-      setSites(prevSites => 
-        prevSites.map(site => 
-          site.site_id === siteId 
-            ? {...site, submission_defaults: null, petri_defaults: null, gasifier_defaults: null} 
-            : site
-        )
-      );
+      return updatedSite as Site;
+    },
+    onSuccess: (updatedSite) => {
+      // Update cache
+      queryClient.setQueryData(['site', updatedSite.site_id], updatedSite);
       
+      queryClient.setQueryData<Site[]>(['sites', programId], (oldData) => {
+        if (!oldData) return [updatedSite];
+        return oldData.map(site => site.site_id === updatedSite.site_id ? updatedSite : site);
+      });
+      
+      toast.success('Site template cleared successfully');
+    },
+    onError: (error) => {
+      console.error('[useSites] Error in clearSiteTemplateDefaults:', error);
+      toast.error(`Failed to clear site template: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  });
+
+  // Wrapper function implementations
+  
+  const updateSiteName = useCallback(async (siteId: string, newName: string): Promise<boolean> => {
+    try {
+      await updateSiteNameMutation.mutateAsync({ siteId, newName });
       return true;
-    } catch (err) {
-      console.error('[useSites] Error in clearSiteTemplateDefaults:', err);
-      setError('Failed to clear template defaults');
+    } catch (error) {
       return false;
-    } finally {
-      setLoading(false);
-      console.log('[useSites] clearSiteTemplateDefaults completed, loading state set to false');
     }
-  }, []);
+  }, [updateSiteNameMutation]);
 
-  // Load sites when component mounts or programId changes
-  useEffect(() => {
-    if (programId) {
-      console.log(`[useSites] useEffect triggered with programId: ${programId}`);
-      fetchSites();
-    } else {
-      console.log('[useSites] useEffect triggered but programId is undefined/null');
+  const updateSiteWeatherDefaults = useCallback(async (siteId: string, temperature: number, humidity: number, weather: 'Clear' | 'Cloudy' | 'Rain'): Promise<boolean> => {
+    try {
+      await updateSiteWeatherDefaultsMutation.mutateAsync({ siteId, temperature, humidity, weather });
+      return true;
+    } catch (error) {
+      return false;
     }
-  }, [programId, fetchSites]);
+  }, [updateSiteWeatherDefaultsMutation]);
 
+  const updateSiteDimensionsAndDensity = useCallback(async (
+    siteId: string,
+    length: number,
+    width: number,
+    height: number,
+    minEfficaciousGasifierDensity: number = 2000,
+    hasDeadZones: boolean = false,
+    numRegularlyOpenedPorts?: number
+  ): Promise<boolean> => {
+    try {
+      await updateSiteDimensionsAndDensityMutation.mutateAsync({
+        siteId,
+        length,
+        width,
+        height,
+        minEfficaciousGasifierDensity,
+        hasDeadZones,
+        numRegularlyOpenedPorts
+      });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, [updateSiteDimensionsAndDensityMutation]);
+
+  const updateSiteProperties = useCallback(async (siteId: string, properties: SiteProperties): Promise<boolean> => {
+    try {
+      await updateSitePropertiesMutation.mutateAsync({ siteId, properties });
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, [updateSitePropertiesMutation]);
+
+  const createSite = useCallback(async (
+    name: string,
+    type: 'Greenhouse' | 'Storage' | 'Transport' | 'Production Facility',
+    pid?: string,
+    submissionDefaults?: SubmissionDefaults,
+    petriDefaults?: PetriDefaults[],
+    gasifierDefaults?: GasifierDefaults[],
+    siteProperties?: SiteProperties
+  ) => {
+    try {
+      return await createSiteMutation.mutateAsync({
+        name,
+        type,
+        pid,
+        submissionDefaults,
+        petriDefaults,
+        gasifierDefaults,
+        siteProperties
+      });
+    } catch (error) {
+      return null;
+    }
+  }, [createSiteMutation, programId]);
+
+  const deleteSite = useCallback(async (siteId: string): Promise<boolean> => {
+    try {
+      await deleteSiteMutation.mutateAsync(siteId);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, [deleteSiteMutation]);
+
+  const updateSiteTemplateDefaults = useCallback(async (
+    siteId: string,
+    submissionDefaults: SubmissionDefaults,
+    petriDefaults: PetriDefaults[],
+    gasifierDefaults: GasifierDefaults[] = [],
+    siteProperties?: SiteProperties
+  ) => {
+    try {
+      return await updateSiteTemplateDefaultsMutation.mutateAsync({
+        siteId,
+        submissionDefaults,
+        petriDefaults,
+        gasifierDefaults,
+        siteProperties
+      });
+    } catch (error) {
+      throw error;
+    }
+  }, [updateSiteTemplateDefaultsMutation]);
+
+  const clearSiteTemplateDefaults = useCallback(async (siteId: string): Promise<boolean> => {
+    try {
+      await clearSiteTemplateDefaultsMutation.mutateAsync(siteId);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }, [clearSiteTemplateDefaultsMutation]);
+
+  // Function to force refresh sites
+  const fetchSites = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ['sites', programId] });
+  }, [queryClient, programId]);
+
+  // Return query data and functions
   return {
-    sites,
-    loading,
-    error,
+    sites: sitesQuery.data || [],
+    loading: sitesQuery.isLoading,
+    error: sitesQuery.error ? String(sitesQuery.error) : null,
     fetchSites,
     fetchSite,
     createSite,
     deleteSite,
-    setSites,
+    setSites: (sites: Site[]) => {
+      queryClient.setQueryData(['sites', programId], sites);
+    },
     updateSiteName,
     updateSiteWeatherDefaults,
     updateSiteProperties,
