@@ -224,6 +224,7 @@ const PetriForm = forwardRef<PetriFormRef, PetriFormProps>(({
         hasImageFile: !!imageFile,
         hasInitialImageUrl: !!(initialData?.observationId && initialData?.imageUrl),
         hasTempImageKey: !!tempImageKey,
+        tempImageKey,
         imageFile: imageFile ? {
           name: imageFile.name,
           size: imageFile.size,

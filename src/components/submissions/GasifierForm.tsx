@@ -216,6 +216,14 @@ const GasifierForm = forwardRef<GasifierFormRef, GasifierFormProps>(({
     outdoor_humidity?: number;
     isDirty: boolean;
   }) => {
+    console.log('GasifierForm handleImageChange called with:', {
+      hasFile: !!data.file,
+      fileSize: data.file?.size,
+      tempImageKey: data.tempImageKey,
+      imageUrl: !!data.imageUrl ? '[present]' : '[not present]',
+      formId
+    });
+
     setImageFile(data.file);
     setTempImageKey(data.tempImageKey);
     setImageUrl(data.imageUrl);
@@ -236,6 +244,24 @@ const GasifierForm = forwardRef<GasifierFormRef, GasifierFormProps>(({
   useEffect(() => {
     // Only update if there's data to report or this is a form with initial data
     if (hasData || initialData) {
+      console.log('GasifierForm useEffect updating parent with:', { 
+        gasifierCode: formik.values.gasifierCode,
+        hasImageFile: !!imageFile,
+        hasInitialImageUrl: !!(initialData?.observationId && initialData?.imageUrl),
+        hasTempImageKey: !!tempImageKey,
+        tempImageKey,
+        imageFile: imageFile ? {
+          name: imageFile.name,
+          size: imageFile.size,
+          type: imageFile.type
+        } : null,
+        isValid,
+        hasData,
+        hasImage,
+        observationId: observationId || initialData?.observationId,
+        isDirty
+      });
+
       onUpdate({
         gasifierCode: formik.values.gasifierCode,
         imageFile,

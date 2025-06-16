@@ -267,6 +267,26 @@ export const getAllTempImages = async (): Promise<{ key: string; blob: Blob }[]>
   return result;
 };
 
+// List all temp image keys for debugging
+export const listTempImageKeys = async (): Promise<string[]> => {
+  try {
+    const db = await initDB();
+    const tx = db.transaction('temp_images', 'readonly');
+    const store = tx.objectStore('temp_images');
+    
+    const allKeys = await store.getAllKeys();
+    const stringKeys = allKeys.map(key => key.toString());
+    
+    console.log(`[offlineStorage.listTempImageKeys] Found ${stringKeys.length} temp image keys`);
+    console.log(`Keys: ${stringKeys.join(', ')}`);
+    
+    return stringKeys;
+  } catch (error) {
+    console.error('Error listing temp image keys:', error);
+    return [];
+  }
+};
+
 export default {
   initDB,
   saveSubmissionOffline,
@@ -280,6 +300,7 @@ export default {
   deleteTempImage,
   clearTempImagesForSubmission,
   getAllTempImages,
+  listTempImageKeys,
   saveSession,
   getSession,
   getAllSessions
