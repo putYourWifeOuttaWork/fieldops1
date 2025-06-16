@@ -195,6 +195,10 @@ export const getAllSessions = async (): Promise<SubmissionSession[]> => {
 // Save a temporary image with a key
 export const saveTempImage = async (key: string, blob: Blob): Promise<string> => {
   const db = await initDB();
+  console.log(`[offlineStorage.saveTempImage] Saving image with key: ${key}`, {
+    blobSize: blob.size, 
+    blobType: blob.type
+  });
   await db.put('temp_images', blob, key);
   return key;
 };
@@ -202,27 +206,42 @@ export const saveTempImage = async (key: string, blob: Blob): Promise<string> =>
 // Get a temporary image by key
 export const getTempImage = async (key: string): Promise<Blob | undefined> => {
   const db = await initDB();
-  return db.get('temp_images', key);
+  console.log(`[offlineStorage.getTempImage] Fetching image with key: ${key}`);
+  const blob = await db.get('temp_images', key);
+  console.log(`[offlineStorage.getTempImage] Result for key ${key}:`, {
+    blobFound: !!blob,
+    blobSize: blob?.size,
+    blobType: blob?.type
+  });
+  return blob;
 };
 
 // Delete a specific temporary image by key
 export const deleteTempImage = async (key: string): Promise<void> => {
   const db = await initDB();
+  console.log(`[offlineStorage.deleteTempImage] Deleting image with key: ${key}`);
   await db.delete('temp_images', key);
 };
 
 // Clear all temporary images for a specific submission
 export const clearTempImagesForSubmission = async (submissionTempId: string): Promise<void> => {
   const db = await initDB();
+  console.log(`[offlineStorage.clearTempImagesForSubmission] Clearing temp images for submission: ${submissionTempId}`);
+  
   const tx = db.transaction('temp_images', 'readwrite');
   const store = tx.objectStore('temp_images');
   
   const allKeys = await store.getAllKeys();
+  let deletedCount = 0;
+  
   for (const key of allKeys) {
     if (typeof key === 'string' && key.includes(submissionTempId)) {
       await store.delete(key);
+      deletedCount++;
     }
   }
+  
+  console.log(`[offlineStorage.clearTempImagesForSubmission] Deleted ${deletedCount} temp images for submission: ${submissionTempId}`);
   
   await tx.done;
 };
@@ -230,6 +249,8 @@ export const clearTempImagesForSubmission = async (submissionTempId: string): Pr
 // Get all temporary images (useful for debugging)
 export const getAllTempImages = async (): Promise<{ key: string; blob: Blob }[]> => {
   const db = await initDB();
+  console.log(`[offlineStorage.getAllTempImages] Retrieving all temp images`);
+  
   const tx = db.transaction('temp_images', 'readonly');
   const store = tx.objectStore('temp_images');
   
@@ -240,6 +261,8 @@ export const getAllTempImages = async (): Promise<{ key: string; blob: Blob }[]>
     const blob = await store.get(key);
     result.push({ key: key as string, blob });
   }
+  
+  console.log(`[offlineStorage.getAllTempImages] Found ${result.length} temp images`);
   
   return result;
 };

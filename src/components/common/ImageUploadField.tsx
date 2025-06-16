@@ -85,7 +85,12 @@ const ImageUploadField = ({
         const fileBlob = new Blob([await file.arrayBuffer()], { type: file.type });
         
         await offlineStorage.saveTempImage(newTempKey, fileBlob);
-        console.log(`Image saved with key: ${newTempKey}`);
+        console.log(`Image saved with key: ${newTempKey}`, {
+          fileSize: file.size,
+          fileType: file.type,
+          imageId,
+          submissionSessionId
+        });
         
         setTempImageKey(newTempKey);
         
@@ -106,6 +111,12 @@ const ImageUploadField = ({
           outdoor_temperature: currentConditions?.temp,
           outdoor_humidity: currentConditions?.RelativeHumidity || currentConditions?.humidity
         };
+
+        console.log('About to call onChange with image data:', { 
+          filePresent: !!file, 
+          tempKey: newTempKey,
+          environmentalData
+        });
 
         // Call the onChange callback with the new data
         onChange({ 
@@ -141,8 +152,13 @@ const ImageUploadField = ({
             const url = URL.createObjectURL(blob);
             setImagePreview(url);
             
-            console.log(`Successfully loaded temp image for key: ${tempImageKey}`);
-            
+            console.log(`Successfully loaded temp image for key: ${tempImageKey}`, {
+              blobSize: blob.size,
+              blobType: blob.type,
+              fileCreated: !!file,
+              fileSize: file.size
+            });
+
             return () => {
               URL.revokeObjectURL(url);
             };
@@ -174,12 +190,14 @@ const ImageUploadField = ({
     
     if (tempImageKey) {
       try {
+        console.log(`Deleting temp image with key: ${tempImageKey}`);
         offlineStorage.deleteTempImage(tempImageKey);
       } catch (error) {
         console.error('Error deleting temp image:', error);
       }
     }
     
+    console.log('Image cleared, calling onChange with null file');
     onChange({
       file: null,
       imageUrl: undefined,
