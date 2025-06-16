@@ -325,7 +325,9 @@ const AppLayout = () => {
       {/* Pulsing Session Indicator for Mobile */}
       {showSessionIndicator && hasActiveSessions && (
         <div 
-          className="fixed right-4 bottom-20 z-50 w-12 h-12 rounded-full bg-primary-600 shadow-lg flex items-center justify-center animate-pulse cursor-pointer"
+          className= "fixed z-50 w-12 h-12 rounded-full flex items-center justify-center cursor-pointer",
+      "right-4", // Keeps it on the right side
+      "bottom-4", // Positions it closer to the bottom
           onClick={() => setIsSessionsDrawerOpen(true)}
         >
           <ClipboardList className="text-white" size={24} />
