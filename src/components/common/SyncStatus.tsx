@@ -99,7 +99,7 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
           textColor: 'text-warning-800',
           borderColor: 'border-warning-200',
           icon: <RefreshCw className="animate-spin" size={18} />,
-          defaultMessage: 'Refresh to Resume Session...'
+          defaultMessage: 'Click Here To Continue'
         };
       default:
         return {
