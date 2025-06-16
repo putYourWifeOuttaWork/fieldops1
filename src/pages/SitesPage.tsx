@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { usePilotProgramStore } from '../stores/pilotProgramStore';
-import { Plus, Search, Building, Leaf, ArrowLeft, History, Info } from 'lucide-react';
+import { Plus, Search, Building, Leaf, ArrowLeft, History } from 'lucide-react';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import LoadingScreen from '../components/common/LoadingScreen';
@@ -13,7 +13,6 @@ import PermissionModal from '../components/common/PermissionModal';
 import SiteCard from '../components/sites/SiteCard';
 import { Site } from '../lib/types';
 import { toast } from 'react-toastify';
-import ProgramDetailsModal from '../components/pilotPrograms/ProgramDetailsModal';
 
 const SitesPage = () => {
   const navigate = useNavigate();
@@ -31,7 +30,6 @@ const SitesPage = () => {
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isProgramDetailsModalOpen, setIsProgramDetailsModalOpen] = useState(false);
   
   // Fetch selected program if not already in state
   useEffect(() => {
@@ -111,11 +109,9 @@ const SitesPage = () => {
     }
   };
 
-  const filteredSites = searchQuery 
-    ? sites.filter(site => 
-        site.name.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : sites;
+  const filteredSites = sites.filter(site => 
+    site.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   if (sitesLoading || programLoading || !selectedProgram) {
     return <LoadingScreen />;
@@ -146,18 +142,6 @@ const SitesPage = () => {
               Audit Log
             </Button>
           )}
-          
-          {selectedProgram && (
-            <Button
-              variant="outline"
-              icon={<Info size={18} />}
-              onClick={() => setIsProgramDetailsModalOpen(true)}
-              testId="view-program-details-button"
-            >
-              Program Details
-            </Button>
-          )}
-          
           <Button 
             variant="primary" 
             icon={<Plus size={18} />}
@@ -243,14 +227,6 @@ const SitesPage = () => {
         title="Insufficient Permissions"
         message={permissionMessage}
       />
-
-      {selectedProgram && (
-        <ProgramDetailsModal
-          isOpen={isProgramDetailsModalOpen}
-          onClose={() => setIsProgramDetailsModalOpen(false)}
-          program={selectedProgram}
-        />
-      )}
     </div>
   );
 };
