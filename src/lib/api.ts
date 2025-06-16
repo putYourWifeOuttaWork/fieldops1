@@ -1,0 +1,145 @@
+import { supabase } from './supabaseClient';
+import { toast } from 'react-toastify';
+
+// Constants for retry logic
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY = 300; // milliseconds
+
+/**
+ * Wrapper for Supabase API calls with retry logic
+ * @param apiCall Function that makes the actual Supabase call
+ * @param retryCount Current retry count
+ * @param maxRetries Maximum number of retries
+ * @returns Promise with the API result
+ */
+export async function withRetry<T>(
+  apiCall: () => Promise<{ data: T | null; error: any }>,
+  retryCount = 0,
+  maxRetries = MAX_RETRIES
+): Promise<{ data: T | null; error: any }> {
+  try {
+    const result = await apiCall();
+    
+    // If we have an error that might be resolved by retrying (network errors, timeouts, etc.)
+    if (result.error && retryCount < maxRetries) {
+      // These error codes generally indicate transient errors that may resolve with a retry
+      const isRetryableError = 
+        result.error.code === 'PGRST116' || // Postgres REST timeout
+        result.error.code === '23505' ||    // Unique violation (might resolve with retry after conflict resolves)
+        result.error.code === '503' ||      // Service unavailable
+        result.error.message?.includes('network') ||
+        result.error.message?.includes('timeout') ||
+        result.error.message?.includes('connection');
+        
+      if (isRetryableError) {
+        console.warn(`API call failed (attempt ${retryCount + 1}/${maxRetries + 1}), retrying...`, result.error);
+        
+        // Calculate delay with exponential backoff
+        const delay = INITIAL_RETRY_DELAY * Math.pow(2, retryCount);
+        
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        // Retry with incremented counter
+        return withRetry(apiCall, retryCount + 1, maxRetries);
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    // Handle unexpected errors (non-Supabase errors)
+    console.error('Unexpected error in API call:', error);
+    
+    // If we haven't exceeded max retries, try again
+    if (retryCount < maxRetries) {
+      console.warn(`API call failed with unexpected error (attempt ${retryCount + 1}/${maxRetries + 1}), retrying...`);
+      
+      // Calculate delay with exponential backoff
+      const delay = INITIAL_RETRY_DELAY * Math.pow(2, retryCount);
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      // Retry with incremented counter
+      return withRetry(apiCall, retryCount + 1, maxRetries);
+    }
+    
+    // If we've exhausted retries, return a formatted error
+    return {
+      data: null,
+      error: {
+        message: error instanceof Error ? error.message : 'Unknown error occurred',
+        originalError: error
+      }
+    };
+  }
+}
+
+/**
+ * Creates an enhanced Supabase query function with caching and retry support
+ * @returns Enhanced query function
+ */
+export const createQueryFn = <T>(
+  queryFn: () => Promise<{ data: T | null; error: any }>,
+  options?: {
+    onError?: (error: any) => void;
+    retries?: number;
+  }
+) => {
+  return async (): Promise<T> => {
+    const { data, error } = await withRetry(queryFn, 0, options?.retries || MAX_RETRIES);
+    
+    if (error) {
+      if (options?.onError) {
+        options.onError(error);
+      } else {
+        console.error('Query error:', error);
+      }
+      throw error;
+    }
+    
+    return data as T;
+  };
+};
+
+/**
+ * Enhanced version of fetchSitesByProgramId with retry logic
+ */
+export const fetchSitesByProgramId = async (programId: string) => {
+  if (!programId) return { data: [], error: null };
+  
+  return withRetry(() => 
+    supabase
+      .from('sites')
+      .select('*')
+      .eq('program_id', programId)
+      .order('name', { ascending: true })
+  );
+};
+
+/**
+ * Enhanced version of fetchSubmissionsBySiteId with retry logic
+ */
+export const fetchSubmissionsBySiteId = async (siteId: string) => {
+  if (!siteId) return { data: [], error: null };
+  
+  return withRetry(() => 
+    supabase
+      .rpc('fetch_submissions_for_site', { p_site_id: siteId })
+  );
+};
+
+/**
+ * Enhanced version of fetchSiteById with retry logic
+ */
+export const fetchSiteById = async (siteId: string) => {
+  if (!siteId) return { data: null, error: null };
+  
+  return withRetry(() => 
+    supabase
+      .from('sites')
+      .select('*')
+      .eq('site_id', siteId)
+      .single()
+  );
+};

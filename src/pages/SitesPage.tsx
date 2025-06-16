@@ -13,6 +13,9 @@ import PermissionModal from '../components/common/PermissionModal';
 import SiteCard from '../components/sites/SiteCard';
 import { Site } from '../lib/types';
 import { toast } from 'react-toastify';
+import { useQueryClient } from '@tanstack/react-query';
+import SiteCardSkeleton from '../components/sites/SiteCardSkeleton';
+import { debounce } from '../utils/helpers';
 
 const SitesPage = () => {
   const navigate = useNavigate();
@@ -26,10 +29,22 @@ const SitesPage = () => {
   const { fetchPilotProgram, loading: programLoading } = usePilotPrograms();
   const { canCreateSite, canDeleteSite, canManageSiteTemplates, canViewAuditLog } = useUserRole({ programId });
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
+  const queryClient = useQueryClient();
+  
+  // Handle search with debounce
+  const debouncedSearch = debounce((query: string) => {
+    setDebouncedSearchQuery(query);
+  }, 300);
+  
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value);
+    debouncedSearch(e.target.value);
+  };
   
   // Fetch selected program if not already in state
   useEffect(() => {
@@ -54,6 +69,8 @@ const SitesPage = () => {
 
   const handleSiteSelect = (site: Site) => {
     setSelectedSite(site);
+    // Cache the selected site for faster access
+    queryClient.setQueryData(['site', site.site_id], site);
     navigate(`/programs/${programId}/sites/${site.site_id}`);
   };
   
@@ -86,6 +103,8 @@ const SitesPage = () => {
   
   const handleManageSiteTemplate = (site: Site) => {
     if (canManageSiteTemplates) {
+      // Cache the selected site for faster access
+      queryClient.setQueryData(['site', site.site_id], site);
       navigate(`/programs/${programId}/sites/${site.site_id}/template`);
     } else {
       setPermissionMessage("You don't have permission to manage site templates. Please contact your program administrator for access.");
@@ -95,8 +114,8 @@ const SitesPage = () => {
   
   // Handle site creation callback
   const handleSiteCreated = (site: any) => {
-    console.log('Site created:', site);
-    // Refresh the sites list
+    // Force a refetch of sites to ensure we have the latest data
+    queryClient.invalidateQueries(['sites', programId]);
     fetchSites();
   };
 
@@ -109,12 +128,36 @@ const SitesPage = () => {
     }
   };
 
-  const filteredSites = sites.filter(site => 
-    site.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredSites = debouncedSearchQuery 
+    ? sites.filter(site => 
+        site.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase())
+      )
+    : sites;
 
-  if (sitesLoading || programLoading || !selectedProgram) {
-    return <LoadingScreen />;
+  // Only show loading screen on initial load when we have no data
+  if ((programLoading || sitesLoading) && sites.length === 0) {
+    return (
+      <div className="animate-fade-in">
+        <div className="flex items-center mb-6">
+          <button
+            onClick={() => navigate('/programs')}
+            className="mr-4 p-2 rounded-full hover:bg-gray-100"
+            aria-label="Go back to programs"
+            disabled
+          >
+            <ArrowLeft size={20} className="text-gray-300" />
+          </button>
+          <div className="flex-grow">
+            <h1 className="text-2xl font-bold text-gray-900">
+              {selectedProgram?.name || <span className="bg-gray-200 animate-pulse rounded h-8 w-48 inline-block">&nbsp;</span>}
+            </h1>
+            <p className="text-gray-600 mt-1">Select a Facility</p>
+          </div>
+        </div>
+        
+        <SiteCardSkeleton count={6} testId="sites-loading-skeleton" />
+      </div>
+    );
   }
 
   return (
@@ -128,7 +171,7 @@ const SitesPage = () => {
           <ArrowLeft size={20} className="text-gray-500" />
         </button>
         <div className="flex-grow">
-          <h1 className="text-2xl font-bold text-gray-900">{selectedProgram.name}</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{selectedProgram?.name}</h1>
           <p className="text-gray-600 mt-1">Select a Facility</p>
         </div>
         <div className="flex space-x-2">
@@ -161,7 +204,7 @@ const SitesPage = () => {
           type="text"
           placeholder="Search sites..."
           value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
+          onChange={handleSearchChange}
           className="pl-10"
           testId="site-search-input"
         />
@@ -189,7 +232,10 @@ const SitesPage = () => {
           <Button 
             variant="outline" 
             className="mt-4"
-            onClick={() => setSearchQuery('')}
+            onClick={() => {
+              setSearchQuery('');
+              setDebouncedSearchQuery('');
+            }}
             testId="clear-search-button"
           >
             Clear search

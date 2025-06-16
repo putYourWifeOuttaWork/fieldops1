@@ -1,160 +1,157 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { usePilotProgramStore } from '../stores/pilotProgramStore';
-import { Plus, Search, ArrowLeft, Settings, History, FileText } from 'lucide-react';
+import { Plus, Search, ArrowLeft, Settings, History } from 'lucide-react';
 import Button from '../components/common/Button';
-import Input from '../components/common/Input';
+import Input from '../common/Input';
 import LoadingScreen from '../components/common/LoadingScreen';
+import NewSiteModal from '../components/sites/NewSiteModal';
 import { useSites } from '../hooks/useSites';
 import { usePilotPrograms } from '../hooks/usePilotPrograms';
-import { useSubmissions } from '../hooks/useSubmissions';
 import useUserRole from '../hooks/useUserRole';
 import PermissionModal from '../components/common/PermissionModal';
+import SiteCard from '../components/sites/SiteCard';
+import { Site } from '../lib/types';
 import { toast } from 'react-toastify';
+import { useQuery } from '@tanstack/react-query';
+import SubmissionCardSkeleton from '../components/submissions/SubmissionCardSkeleton';
+import { supabase } from '../lib/supabaseClient';
 import DeleteConfirmModal from '../components/common/DeleteConfirmModal';
 import SubmissionCard from '../components/submissions/SubmissionCard';
-import { supabase } from '../lib/supabaseClient';
+import { useSubmissions } from '../hooks/useSubmissions';
 import { format } from 'date-fns';
+import { debounce } from '../utils/helpers';
 
 const SubmissionsPage = () => {
   const navigate = useNavigate();
-  const location = useLocation();
   const { programId, siteId } = useParams<{ programId: string, siteId: string }>();
   const { 
     selectedProgram, 
-    setSelectedProgram,
-    selectedSite, 
+    setSelectedProgram, 
     setSelectedSite,
   } = usePilotProgramStore();
+  const { sites, loading: sitesLoading, fetchSites, deleteSite } = useSites(programId);
   const { fetchPilotProgram, loading: programLoading } = usePilotPrograms();
-  const { fetchSite, loading: siteLoading } = useSites(programId);
-  const { 
-    submissions, 
-    loading: submissionsLoading, 
-    fetchSubmissions,
-    deleteSubmission 
-  } = useSubmissions(siteId);
-  const { 
-    canCreateSubmission, 
-    canEditSubmission,
-    canDeleteSubmission,
-    canManageSiteTemplates,
-    canViewAuditLog
-  } = useUserRole({ programId });
-  
+  const { canCreateSite, canDeleteSite, canManageSiteTemplates, canViewAuditLog } = useUserRole({ programId });
+  const [searchQuery, setSearchQuery] = useState('');
   const [showPermissionModal, setShowPermissionModal] = useState(false);
   const [permissionMessage, setPermissionMessage] = useState("");
   const [submissionToDelete, setSubmissionToDelete] = useState<any | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [hasInitialized, setHasInitialized] = useState(false);
-  const [sessionStatuses, setSessionStatuses] = useState<{ [key: string]: string }>({});
-  const [lastActivityTimes, setLastActivityTimes] = useState<{ [key: string]: string }>({});
+  const [searchDelayCompleted, setSearchDelayCompleted] = useState(true);
   
-  // Use useCallback to memoize the loadProgramAndSite function
-  const loadProgramAndSite = useCallback(async () => {
-    if (!programId || !siteId) return;
-    
-    // Define the conditions for fetching program and site
-    const shouldFetchProgram = !selectedProgram || selectedProgram.program_id !== programId;
-    const shouldFetchSite = !selectedSite || selectedSite.site_id !== siteId;
-    
-    // Only fetch the program if needed
-    if (shouldFetchProgram) {
-      console.log("Fetching program because shouldFetchProgram:", shouldFetchProgram);
+  // Use React Query for submissions
+  const {
+    submissions,
+    loading: submissionsLoading,
+    fetchSubmissions,
+    deleteSubmission
+  } = useSubmissions(siteId);
+  
+  // Session status query
+  const sessionStatusesQuery = useQuery({
+    queryKey: ['sessionStatuses', submissions?.map(s => s.submission_id)],
+    queryFn: async () => {
+      if (!submissions || submissions.length === 0) return {};
+      
+      const submissionIds = submissions.map(s => s.submission_id);
+      
+      const { data, error } = await supabase
+        .from('submission_sessions')
+        .select('submission_id, session_status, last_activity_time')
+        .in('submission_id', submissionIds);
+        
+      if (error) throw error;
+      
+      // Create lookup maps
+      const statusMap: { [key: string]: string } = {};
+      const activityMap: { [key: string]: string } = {};
+      
+      if (data && data.length > 0) {
+        data.forEach(session => {
+          statusMap[session.submission_id] = session.session_status;
+          activityMap[session.submission_id] = session.last_activity_time;
+        });
+      }
+      
+      return { statusMap, activityMap };
+    },
+    enabled: !!submissions && submissions.length > 0,
+    staleTime: 60000, // 1 minute
+  });
+  
+  // Handle search with debounce
+  const debouncedSearch = debounce((query: string) => {
+    setSearchQuery(query);
+    setSearchDelayCompleted(true);
+  }, 300);
+  
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchDelayCompleted(false);
+    debouncedSearch(e.target.value);
+  };
+  
+  // Fetch selected program if not already in state
+  useEffect(() => {
+    const loadPilotProgram = async () => {
+      if (!programId) return;
+      
+      // Check if we already have the program in state
+      if (selectedProgram && selectedProgram.program_id === programId) {
+        return;
+      }
+      
       const program = await fetchPilotProgram(programId);
       if (program) {
         setSelectedProgram(program);
       } else {
         navigate('/programs');
-        return;
       }
-    }
-    
-    // Only fetch the site if needed
-    if (shouldFetchSite) {
-      console.log("Fetching site because shouldFetchSite:", shouldFetchSite);
-      const site = await fetchSite(siteId);
+    };
+
+    loadPilotProgram();
+  }, [programId, selectedProgram, setSelectedProgram, fetchPilotProgram, navigate]);
+
+  // Fetch selected site
+  useEffect(() => {
+    const loadSite = async () => {
+      if (!siteId) return;
+      
+      const site = await queryClient.fetchQuery({
+        queryKey: ['site', siteId],
+        queryFn: async () => {
+          return await fetchSite(siteId);
+        }
+      });
+      
       if (site) {
         setSelectedSite(site);
-      } else {
-        navigate(`/programs/${programId}/sites`);
-        return;
-      }
-    }
-  }, [programId, siteId, selectedProgram, selectedSite, fetchPilotProgram, fetchSite, setSelectedProgram, setSelectedSite, navigate]);
-
-  // Initialize the component only once
-  useEffect(() => {
-    if (!hasInitialized) {
-      loadProgramAndSite();
-      setHasInitialized(true);
-    }
-  }, [hasInitialized, loadProgramAndSite]);
-
-  // Update when route parameters change
-  useEffect(() => {
-    if (hasInitialized && (
-      (selectedProgram?.program_id !== programId) ||
-      (selectedSite?.site_id !== siteId)
-    )) {
-      loadProgramAndSite();
-    }
-  }, [programId, siteId, selectedProgram, selectedSite, loadProgramAndSite, hasInitialized]);
-
-  // Fetch submission sessions when submissions are loaded
-  useEffect(() => {
-    const fetchSessionStatuses = async () => {
-      if (!submissions || submissions.length === 0) return;
-      
-      try {
-        // Create a list of submission IDs to query
-        const submissionIds = submissions.map(s => s.submission_id);
-        
-        // Fetch session data for all submissions
-        const { data, error } = await supabase
-          .from('submission_sessions')
-          .select('submission_id, session_status, last_activity_time')
-          .in('submission_id', submissionIds);
-          
-        if (error) throw error;
-        
-        // Create lookup maps for session status and last activity time
-        const statusMap: { [key: string]: string } = {};
-        const activityMap: { [key: string]: string } = {};
-        
-        if (data && data.length > 0) {
-          data.forEach(session => {
-            statusMap[session.submission_id] = session.session_status;
-            activityMap[session.submission_id] = session.last_activity_time;
-          });
-        }
-        
-        setSessionStatuses(statusMap);
-        setLastActivityTimes(activityMap);
-      } catch (err) {
-        console.error('Error fetching session statuses:', err);
       }
     };
     
-    fetchSessionStatuses();
-  }, [submissions]);
-
+    loadSite();
+  }, [siteId, setSelectedSite]);
+  
+  const handleSiteSelect = (site: Site) => {
+    setSelectedSite(site);
+    navigate(`/programs/${programId}/sites/${site.site_id}`);
+  };
+  
   const handleNewSubmission = () => {
-    if (canCreateSubmission) {
+    if (canCreateSite) {
       navigate(`/programs/${programId}/sites/${siteId}/new-submission`);
     } else {
       setPermissionMessage("You don't have permission to create new submissions. Please contact your program administrator for access.");
       setShowPermissionModal(true);
     }
   };
-
+  
   const handleViewSubmission = async (submission: any) => {
     navigate(`/programs/${programId}/sites/${siteId}/submissions/${submission.submission_id}/edit`);
   };
 
   const handleDeleteSubmission = (submission: any) => {
-    if (canDeleteSubmission) {
+    if (canDeleteSite) {
       setSubmissionToDelete(submission);
     } else {
       setPermissionMessage("You don't have permission to delete submissions. Please contact your program administrator for access.");
@@ -196,12 +193,12 @@ const SubmissionsPage = () => {
   };
 
   // Filter out cancelled sessions from the search results
-  const filteredSubmissions = searchQuery 
+  const filteredSubmissions = searchQuery && searchDelayCompleted
     ? submissions
         .filter(submission => 
           // First filter out cancelled sessions
-          !sessionStatuses[submission.submission_id] || 
-          sessionStatuses[submission.submission_id] !== 'Cancelled'
+          !sessionStatusesQuery.data?.statusMap[submission.submission_id] || 
+          sessionStatusesQuery.data?.statusMap[submission.submission_id] !== 'Cancelled'
         )
         .filter(submission => 
           // Then apply search filter
@@ -212,15 +209,16 @@ const SubmissionsPage = () => {
         )
     : submissions.filter(submission => 
         // Just filter out cancelled sessions when no search query
-        !sessionStatuses[submission.submission_id] || 
-        sessionStatuses[submission.submission_id] !== 'Cancelled'
+        !sessionStatusesQuery.data?.statusMap[submission.submission_id] || 
+        sessionStatusesQuery.data?.statusMap[submission.submission_id] !== 'Cancelled'
       );
 
-  if (programLoading || siteLoading || submissionsLoading || !hasInitialized) {
+  // Only show loading screen on initial load when we have no data
+  if ((programLoading || sitesLoading) && !selectedProgram) {
     return <LoadingScreen />;
   }
 
-  if (!selectedProgram || !selectedSite) {
+  if (!selectedProgram) {
     return (
       <div className="text-center py-12">
         <p className="text-gray-600">Data not found. Please return to the previous page.</p>
@@ -235,6 +233,8 @@ const SubmissionsPage = () => {
     );
   }
 
+  const isLoading = submissionsLoading || sessionStatusesQuery.isLoading || !searchDelayCompleted;
+
   return (
     <div className="animate-fade-in pb-20 md:pb-0">
       <div className="flex flex-col md:flex-row md:items-center justify-between mb-4 md:mb-6 gap-2">
@@ -247,8 +247,10 @@ const SubmissionsPage = () => {
             <ArrowLeft size={20} className="text-gray-500" />
           </button>
           <div>
-            <h1 className="text-xl md:text-2xl font-bold text-gray-900">{selectedSite.name}</h1>
-            <p className="text-sm md:text-base text-gray-600 mt-0.5">{selectedSite.type} - Submissions History</p>
+            <h1 className="text-xl md:text-2xl font-bold text-gray-900">{selectedSite?.name || 'Loading...'}</h1>
+            <p className="text-sm md:text-base text-gray-600 mt-0.5">
+              {selectedSite?.type || ''} - Submissions History
+            </p>
           </div>
         </div>
         
@@ -293,15 +295,15 @@ const SubmissionsPage = () => {
           <Input
             type="text"
             placeholder="Search submissions by ID or notes..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            defaultValue={searchQuery}
+            onChange={handleSearchChange}
             className="pl-10"
             testId="submission-search-input"
           />
         </div>
       )}
       
-      {submissions.length === 0 ? (
+      {submissions.length === 0 && !isLoading ? (
         <div className="text-center py-8 md:py-12 bg-gray-50 rounded-lg border border-gray-200" data-testid="empty-submissions-message">
           <FileText className="mx-auto h-10 w-10 md:h-12 md:w-12 text-gray-400" />
           <h3 className="mt-2 text-lg font-medium text-gray-900">No submissions yet</h3>
@@ -317,7 +319,7 @@ const SubmissionsPage = () => {
             </Button>
           </div>
         </div>
-      ) : filteredSubmissions.length === 0 ? (
+      ) : filteredSubmissions.length === 0 && !isLoading ? (
         <div className="text-center py-6 md:py-8 bg-gray-50 rounded-lg border border-gray-200" data-testid="no-search-results-message">
           <p className="text-gray-600">No submissions match your search</p>
           <Button 
@@ -329,18 +331,21 @@ const SubmissionsPage = () => {
             Clear search
           </Button>
         </div>
+      ) : isLoading ? (
+        // Show skeleton loader during loading
+        <SubmissionCardSkeleton count={3} testId="submissions-loading-skeleton" />
       ) : (
         <div className="space-y-3 md:space-y-4" data-testid="submissions-list">
           {filteredSubmissions.map(submission => {
-            const sessionStatus = sessionStatuses[submission.submission_id];
-            const lastActivityTime = lastActivityTimes[submission.submission_id];
+            const sessionStatus = sessionStatusesQuery.data?.statusMap[submission.submission_id];
+            const lastActivityTime = sessionStatusesQuery.data?.activityMap[submission.submission_id];
             
             return (
               <SubmissionCard
                 key={submission.submission_id}
                 submission={submission}
                 onDelete={handleDeleteSubmission}
-                canDelete={canDeleteSubmission}
+                canDelete={canDeleteSite}
                 sessionStatus={sessionStatus}
                 lastActivityTime={lastActivityTime}
                 testId={`submission-card-${submission.submission_id}`}

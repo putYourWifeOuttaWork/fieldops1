@@ -11,6 +11,8 @@ import {
   PetriFormData,
   GasifierFormData
 } from '../utils/submissionUtils';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { withRetry, fetchSubmissionsBySiteId } from '../lib/api';
 
 interface SubmissionWithCounts extends Submission {
   petri_count: number;
@@ -25,51 +27,77 @@ export function useSubmissions(siteId?: string) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isOnline = useOnlineStatus();
+  const queryClient = useQueryClient();
 
-  // Memoize fetchSubmissions with useCallback to prevent unnecessary re-creations
-  const fetchSubmissions = useCallback(async (sid?: string) => {
-    const id = sid || siteId;
-    if (!id) return;
-    
-    setLoading(true);
-    setError(null);
-    
-    try {
-      // Use the fetch_submissions_for_site function to get submissions with counts
-      const { data: submissionsData, error: submissionsError } = await supabase
-        .rpc('fetch_submissions_for_site', { p_site_id: id });
-        
-      if (submissionsError) throw submissionsError;
+  // Use React Query for fetching submissions
+  const submissionsQuery = useQuery({
+    queryKey: ['submissions', siteId],
+    queryFn: async () => {
+      if (!siteId) return [];
+      
+      const { data, error } = await fetchSubmissionsBySiteId(siteId);
+      
+      if (error) {
+        throw error;
+      }
       
       // Format the data
-      const formattedSubmissions = submissionsData.map(sub => ({
+      return data?.map(sub => ({
         ...sub,
         petri_count: Number(sub.petri_count) || 0,
         gasifier_count: Number(sub.gasifier_count) || 0,
         global_submission_id: Number(sub.global_submission_id) || 0
-      }));
-      
-      setSubmissions(formattedSubmissions);
-    } catch (err) {
-      console.error('Error fetching submissions:', err);
-      setError('Failed to load submissions');
-    } finally {
-      setLoading(false);
-    }
-  }, [siteId]); // Only depend on siteId, not on state setters which don't change
+      })) || [];
+    },
+    enabled: !!siteId,
+    keepPreviousData: true,
+    refetchOnWindowFocus: false
+  });
 
+  // Update the local state whenever the query data changes
+  useEffect(() => {
+    if (submissionsQuery.data) {
+      setSubmissions(submissionsQuery.data);
+    }
+    
+    setLoading(submissionsQuery.isLoading);
+    setError(submissionsQuery.error ? String(submissionsQuery.error) : null);
+  }, [submissionsQuery.data, submissionsQuery.isLoading, submissionsQuery.error]);
+
+  // Memoized fetchSubmissions with useCallback
+  const fetchSubmissions = useCallback(async () => {
+    if (!siteId) return;
+    
+    // Refetch using React Query instead of manual fetching
+    await queryClient.refetchQueries({ queryKey: ['submissions', siteId] });
+  }, [siteId, queryClient]);
+
+  // Use React Query for fetching petri observations
   const fetchSubmissionPetriObservations = useCallback(async (submissionId: string) => {
     setLoading(true);
     setError(null);
     
     try {
-      // Fetch the petri observations for this submission
-      const { data, error } = await supabase
-        .from('petri_observations')
-        .select('*')
-        .eq('submission_id', submissionId);
-        
+      // Check cache first
+      const cachedData = queryClient.getQueryData<PetriObservation[]>(['petriObservations', submissionId]);
+      
+      if (cachedData) {
+        setLoading(false);
+        return cachedData;
+      }
+      
+      // Fetch with retry logic
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('petri_observations')
+          .select('*')
+          .eq('submission_id', submissionId)
+      );
+      
       if (error) throw error;
+      
+      // Cache the result
+      queryClient.setQueryData(['petriObservations', submissionId], data);
       
       return data || [];
     } catch (err) {
@@ -79,20 +107,34 @@ export function useSubmissions(siteId?: string) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queryClient]);
 
+  // Use React Query for fetching gasifier observations
   const fetchSubmissionGasifierObservations = useCallback(async (submissionId: string) => {
     setLoading(true);
     setError(null);
     
     try {
-      // Fetch the gasifier observations for this submission
-      const { data, error } = await supabase
-        .from('gasifier_observations')
-        .select('*')
-        .eq('submission_id', submissionId);
-        
+      // Check cache first
+      const cachedData = queryClient.getQueryData<GasifierObservation[]>(['gasifierObservations', submissionId]);
+      
+      if (cachedData) {
+        setLoading(false);
+        return cachedData;
+      }
+      
+      // Fetch with retry logic
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('gasifier_observations')
+          .select('*')
+          .eq('submission_id', submissionId)
+      );
+      
       if (error) throw error;
+      
+      // Cache the result
+      queryClient.setQueryData(['gasifierObservations', submissionId], data);
       
       return data || [];
     } catch (err) {
@@ -102,28 +144,38 @@ export function useSubmissions(siteId?: string) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [queryClient]);
 
-  const createSubmission = async (
-    temperature: number,
-    humidity: number,
-    airflow: 'Open' | 'Closed',
-    odorDistance: '5-10ft' | '10-25ft' | '25-50ft' | '50-100ft' | '>100ft',
-    weather: 'Clear' | 'Cloudy' | 'Rain',
-    notes: string | null,
-    petriObservations: PetriFormData[],
-    gasifierObservations: GasifierFormData[],
-    sid?: string,
-    indoorTemperature?: number | null,
-    indoorHumidity?: number | null
-  ) => {
-    const id = sid || siteId;
-    if (!id || !user) return null;
-    
-    setLoading(true);
-    setError(null);
-    
-    try {
+  // Create submission mutation
+  const createSubmissionMutation = useMutation({
+    mutationFn: async ({
+      temperature,
+      humidity,
+      airflow,
+      odorDistance,
+      weather,
+      notes,
+      petriObservations,
+      gasifierObservations,
+      sid,
+      indoorTemperature,
+      indoorHumidity
+    }: {
+      temperature: number;
+      humidity: number;
+      airflow: 'Open' | 'Closed';
+      odorDistance: '5-10ft' | '10-25ft' | '25-50ft' | '50-100ft' | '>100ft';
+      weather: 'Clear' | 'Cloudy' | 'Rain';
+      notes: string | null;
+      petriObservations: PetriFormData[];
+      gasifierObservations: GasifierFormData[];
+      sid?: string;
+      indoorTemperature?: number | null;
+      indoorHumidity?: number | null;
+    }) => {
+      const id = sid || siteId;
+      if (!id || !user) throw new Error('Site ID and user are required');
+      
       if (!isOnline) {
         // Store submission for offline sync
         const offlineSubmission = {
@@ -167,28 +219,29 @@ export function useSubmissions(siteId?: string) {
           offlineGasifierObservations
         );
         
-        toast.info('Submission saved locally and will sync when online');
         return offlineSubmission;
       }
       
-      // Insert new submission
-      const { data, error: submissionError } = await supabase
-        .from('submissions')
-        .insert({
-          site_id: id,
-          temperature,
-          humidity,
-          airflow,
-          odor_distance: odorDistance,
-          weather,
-          notes,
-          created_by: user.id,
-          indoor_temperature: indoorTemperature,
-          indoor_humidity: indoorHumidity
-        })
-        .select()
-        .single();
-        
+      // Create submission with retry logic
+      const { data, error: submissionError } = await withRetry(() => 
+        supabase
+          .from('submissions')
+          .insert({
+            site_id: id,
+            temperature,
+            humidity,
+            airflow,
+            odor_distance: odorDistance,
+            weather,
+            notes,
+            created_by: user.id,
+            indoor_temperature: indoorTemperature,
+            indoor_humidity: indoorHumidity
+          })
+          .select()
+          .single()
+      );
+      
       if (submissionError) throw submissionError;
 
       // Filter valid form data
@@ -206,26 +259,24 @@ export function useSubmissions(siteId?: string) {
         console.warn('Some observations may not have been updated correctly');
       }
       
-      toast.success('Submission created successfully!');
-      await fetchSubmissions();
-      
       return {
         ...data,
         updatedPetriObservations: petriResult.updatedObservations,
         updatedGasifierObservations: gasifierResult.updatedObservations
       };
-    } catch (err) {
-      console.error('Error creating submission:', err);
-      setError('Failed to create submission');
+    },
+    onSuccess: () => {
+      // Invalidate and refetch submissions query to update the list
+      queryClient.invalidateQueries(['submissions', siteId]);
+      toast.success('Submission created successfully!');
+    },
+    onError: (error) => {
+      console.error('Error creating submission:', error);
       toast.error('Failed to create submission. Please try again.');
-      return null;
-    } finally {
-      setLoading(false);
     }
-  };
+  });
 
-  const updateSubmission = async (
-    submissionId: string,
+  const createSubmission = useCallback(async (
     temperature: number,
     humidity: number,
     airflow: 'Open' | 'Closed',
@@ -234,49 +285,77 @@ export function useSubmissions(siteId?: string) {
     notes: string | null,
     petriObservations: PetriFormData[],
     gasifierObservations: GasifierFormData[],
+    sid?: string,
     indoorTemperature?: number | null,
     indoorHumidity?: number | null
   ) => {
-    if (!submissionId) return null;
-    
-    setLoading(true);
-    setError(null);
-    
     try {
-      // First, check the current session status
-      const { data: sessionData, error: sessionError } = await supabase
-        .from('submission_sessions')
-        .select('session_status')
-        .eq('submission_id', submissionId)
-        .maybeSingle();
-        
-      if (sessionError) {
-        console.error('Error fetching session status:', sessionError);
-      }
+      return await createSubmissionMutation.mutateAsync({
+        temperature,
+        humidity,
+        airflow,
+        odorDistance,
+        weather,
+        notes,
+        petriObservations,
+        gasifierObservations,
+        sid,
+        indoorTemperature,
+        indoorHumidity
+      });
+    } catch (error) {
+      return null;
+    }
+  }, [createSubmissionMutation]);
+
+  // Update submission mutation
+  const updateSubmissionMutation = useMutation({
+    mutationFn: async ({
+      submissionId,
+      temperature,
+      humidity,
+      airflow,
+      odorDistance,
+      weather,
+      notes,
+      petriObservations,
+      gasifierObservations,
+      indoorTemperature,
+      indoorHumidity
+    }: {
+      submissionId: string;
+      temperature: number;
+      humidity: number;
+      airflow: 'Open' | 'Closed';
+      odorDistance: '5-10ft' | '10-25ft' | '25-50ft' | '50-100ft' | '>100ft';
+      weather: 'Clear' | 'Cloudy' | 'Rain';
+      notes: string | null;
+      petriObservations: PetriFormData[];
+      gasifierObservations: GasifierFormData[];
+      indoorTemperature?: number | null;
+      indoorHumidity?: number | null;
+    }) => {
+      if (!submissionId) throw new Error('Submission ID is required');
       
-      // Determine if this is an initial session where we can create new observations
-      const sessionStatus = sessionData?.session_status;
-      const isInitialSession = !sessionStatus || sessionStatus === 'Opened';
+      // Update existing submission with retry logic
+      const { data, error } = await withRetry(() => 
+        supabase
+          .from('submissions')
+          .update({
+            temperature,
+            humidity,
+            airflow,
+            odor_distance: odorDistance,
+            weather,
+            notes,
+            indoor_temperature: indoorTemperature,
+            indoor_humidity: indoorHumidity
+          })
+          .eq('submission_id', submissionId)
+          .select()
+          .single()
+      );
       
-      console.log(`Session status: ${sessionStatus}, isInitialSession: ${isInitialSession}`);
-      
-      // Update existing submission
-      const { data, error } = await supabase
-        .from('submissions')
-        .update({
-          temperature,
-          humidity,
-          airflow,
-          odor_distance: odorDistance,
-          weather,
-          notes,
-          indoor_temperature: indoorTemperature,
-          indoor_humidity: indoorHumidity
-        })
-        .eq('submission_id', submissionId)
-        .select()
-        .single();
-        
       if (error) throw error;
 
       // Get the site ID for this submission
@@ -292,69 +371,104 @@ export function useSubmissions(siteId?: string) {
       // Process gasifier observations
       const gasifierResult = await updateGasifierObservations(validGasifierForms, data.submission_id, siteId);
       
-      // If either operation failed, log error but still return data
-      if (!petriResult.success || !gasifierResult.success) {
-        console.warn('Some observations may not have been updated correctly');
-      }
-      
       // Return the submission data along with the updated observation IDs
-      const result = {
+      return {
         ...data,
         updatedPetriObservations: petriResult.updatedObservations,
         updatedGasifierObservations: gasifierResult.updatedObservations
       };
-
-      await fetchSubmissions();
-      return result;
-    } catch (err) {
-      console.error('Error updating submission:', err);
-      setError('Failed to update submission');
+    },
+    onSuccess: (data) => {
+      // Invalidate and refetch queries to update the data
+      queryClient.invalidateQueries(['submissions', siteId]);
+      queryClient.invalidateQueries(['submission', data.submission_id]);
+      queryClient.invalidateQueries(['petriObservations', data.submission_id]);
+      queryClient.invalidateQueries(['gasifierObservations', data.submission_id]);
+      
+      toast.success('Submission updated successfully!');
+    },
+    onError: (error) => {
+      console.error('Error updating submission:', error);
       toast.error('Failed to update submission. Please try again.');
-      return null;
-    } finally {
-      setLoading(false);
     }
-  };
+  });
 
-  // Delete a submission
-  const deleteSubmission = useCallback(async (submissionId: string) => {
-    if (!submissionId) return false;
-    
-    setLoading(true);
-    setError(null);
-    
+  const updateSubmission = useCallback(async (
+    submissionId: string,
+    temperature: number,
+    humidity: number,
+    airflow: 'Open' | 'Closed',
+    odorDistance: '5-10ft' | '10-25ft' | '25-50ft' | '50-100ft' | '>100ft',
+    weather: 'Clear' | 'Cloudy' | 'Rain',
+    notes: string | null,
+    petriObservations: PetriFormData[],
+    gasifierObservations: GasifierFormData[],
+    indoorTemperature?: number | null,
+    indoorHumidity?: number | null
+  ) => {
     try {
-      const { error } = await supabase
-        .from('submissions')
-        .delete()
-        .eq('submission_id', submissionId);
-        
+      return await updateSubmissionMutation.mutateAsync({
+        submissionId,
+        temperature,
+        humidity,
+        airflow,
+        odorDistance,
+        weather,
+        notes,
+        petriObservations,
+        gasifierObservations,
+        indoorTemperature,
+        indoorHumidity
+      });
+    } catch (error) {
+      return null;
+    }
+  }, [updateSubmissionMutation]);
+
+  // Delete submission mutation
+  const deleteSubmissionMutation = useMutation({
+    mutationFn: async (submissionId: string) => {
+      if (!submissionId) throw new Error('Submission ID is required');
+      
+      const { error } = await withRetry(() => 
+        supabase
+          .from('submissions')
+          .delete()
+          .eq('submission_id', submissionId)
+      );
+      
       if (error) throw error;
       
-      // Update local state by removing the deleted submission
+      return submissionId;
+    },
+    onSuccess: (submissionId) => {
+      // Update local state
       setSubmissions(prevSubmissions => 
         prevSubmissions.filter(submission => submission.submission_id !== submissionId)
       );
       
+      // Invalidate and refetch queries
+      queryClient.invalidateQueries(['submissions', siteId]);
+      queryClient.removeQueries(['submission', submissionId]);
+      queryClient.removeQueries(['petriObservations', submissionId]);
+      queryClient.removeQueries(['gasifierObservations', submissionId]);
+      
       toast.success('Submission deleted successfully!');
-      return true;
-    } catch (err) {
-      console.error('Error deleting submission:', err);
-      setError('Failed to delete submission');
+    },
+    onError: (error) => {
+      console.error('Error deleting submission:', error);
       toast.error('Failed to delete submission. Please try again.');
-      return false;
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  });
 
-  // Load submissions when component mounts or siteId changes
-  useEffect(() => {
-    if (siteId) {
-      console.log(`[useSubmissions] Loading submissions for siteId: ${siteId}`);
-      fetchSubmissions();
+  const deleteSubmission = useCallback(async (submissionId: string) => {
+    try {
+      await deleteSubmissionMutation.mutateAsync(submissionId);
+      return true;
+    } catch (error) {
+      return false;
     }
-  }, [siteId, fetchSubmissions]);
+  }, [deleteSubmissionMutation]);
 
   return {
     submissions,

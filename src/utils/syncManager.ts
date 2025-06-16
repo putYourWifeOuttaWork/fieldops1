@@ -1,6 +1,7 @@
 import { supabase } from '../lib/supabaseClient';
 import offlineStorage from './offlineStorage';
 import { toast } from 'react-toastify';
+import { retry } from './helpers';
 
 // Check if we're online
 const isOnline = () => navigator.onLine;
@@ -48,12 +49,14 @@ export const syncPendingSubmissions = async (onProgress?: (current: number, tota
       const { submission, petriObservations, gasifierObservations } = pendingItem;
       const tempSubmissionId = submission.submission_id; // Store the temporary ID
       
-      // Insert submission
-      const { data: submissionData, error: submissionError } = await supabase
-        .from('submissions')
-        .insert(submission)
-        .select()
-        .single();
+      // Insert submission with retry logic
+      const { data: submissionData, error: submissionError } = await retry(() => 
+        supabase
+          .from('submissions')
+          .insert(submission)
+          .select()
+          .single()
+      );
         
       if (submissionError) throw submissionError;
       
@@ -63,18 +66,20 @@ export const syncPendingSubmissions = async (onProgress?: (current: number, tota
       const petriObservationMap: { oldId: string; newId: string }[] = [];
       const gasifierObservationMap: { oldId: string; newId: string }[] = [];
       
-      // Insert petri observations
+      // Insert petri observations with retry logic
       for (const observation of petriObservations) {
         const oldObservationId = observation.observation_id; // Store the temporary ID
         
-        const { data: obsData, error: observationError } = await supabase
-          .from('petri_observations')
-          .insert({
-            ...observation,
-            submission_id: submissionData.submission_id
-          })
-          .select('observation_id')
-          .single();
+        const { data: obsData, error: observationError } = await retry(() => 
+          supabase
+            .from('petri_observations')
+            .insert({
+              ...observation,
+              submission_id: submissionData.submission_id
+            })
+            .select('observation_id')
+            .single()
+        );
           
         if (observationError) throw observationError;
         
@@ -85,18 +90,20 @@ export const syncPendingSubmissions = async (onProgress?: (current: number, tota
         });
       }
 
-      // Insert gasifier observations
+      // Insert gasifier observations with retry logic
       for (const observation of gasifierObservations) {
         const oldObservationId = observation.observation_id; // Store the temporary ID
         
-        const { data: obsData, error: observationError } = await supabase
-          .from('gasifier_observations')
-          .insert({
-            ...observation,
-            submission_id: submissionData.submission_id
-          })
-          .select('observation_id')
-          .single();
+        const { data: obsData, error: observationError } = await retry(() => 
+          supabase
+            .from('gasifier_observations')
+            .insert({
+              ...observation,
+              submission_id: submissionData.submission_id
+            })
+            .select('observation_id')
+            .single()
+        );
           
         if (observationError) throw observationError;
         

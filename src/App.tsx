@@ -19,19 +19,27 @@ import { toast } from 'react-toastify';
 import sessionManager from './lib/sessionManager';
 import { useSessionStore } from './stores/sessionStore';
 import { usePilotProgramStore } from './stores/pilotProgramStore';
+import NetworkStatusIndicator from './components/common/NetworkStatusIndicator';
 
 // Lazy load pages to improve initial load time
 const HomePage = lazy(() => import('./pages/HomePage'));
 const PilotProgramsPage = lazy(() => import('./pages/PilotProgramsPage'));
 const SitesPage = lazy(() => import('./pages/SitesPage'));
 const SubmissionsPage = lazy(() => import('./pages/SubmissionsPage'));
-const SubmissionEditPage = lazy(() => import('./pages/SubmissionEditPage')); // Add this line
-const NewSubmissionPage = lazy(() => import('./pages/NewSubmissionPage')); // Add this line
+const SubmissionEditPage = lazy(() => import('./pages/SubmissionEditPage'));
+const NewSubmissionPage = lazy(() => import('./pages/NewSubmissionPage'));
 const SiteTemplateManagementPage = lazy(() => import('./pages/SiteTemplateManagementPage'));
 const UserProfilePage = lazy(() => import('./pages/UserProfilePage'));
 const AuditLogPage = lazy(() => import('./pages/AuditLogPage'));
 const CompanyManagementPage = lazy(() => import('./pages/CompanyManagementPage'));
 const UserAuditPage = lazy(() => import('./pages/UserAuditPage'));
+
+// Custom loading component for lazy-loaded routes
+const LazyLoadingFallback = () => (
+  <div className="min-h-[200px] flex items-center justify-center">
+    <div className="w-8 h-8 border-2 border-t-2 border-primary-600 border-t-transparent rounded-full animate-spin"></div>
+  </div>
+);
 
 function App() {
   const navigate = useNavigate();
@@ -127,39 +135,17 @@ function App() {
         setReconnectAttempts(prev => prev + 1);
         
         try {
-          // Verify the session is still valid
-          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-          
-          if (sessionError) {
-            console.error('Session error during reconnection:', sessionError);
-            // If we've tried to reconnect multiple times and still getting errors, force reload
-            if (reconnectAttempts >= 2) {
-              console.log('Multiple reconnection attempts failed, forcing page reload');
-              window.location.reload(true);
-              return;
-            }
+          // Verify the session is still valid using retry logic
+          const checkSession = async () => {
+            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
             
-            // Otherwise just set the reconnecting state and let the user try manually
-            setSyncStatus('reconnecting');
-            return;
-          }
-          
-          if (!sessionData.session) {
-            console.log('No session found during reconnection check');
-            // If we've tried to reconnect multiple times and still no session, force reload
-            if (reconnectAttempts >= 2) {
-              console.log('Multiple reconnection attempts failed, forcing page reload');
-              setUser(null);
-              setCurrentSessionId(null);
-              resetAll();
-              window.location.reload(true);
-              return;
-            }
+            if (sessionError) throw sessionError;
+            if (!sessionData.session) throw new Error('No session found');
             
-            // Otherwise just set the reconnecting state and let the user try manually
-            setSyncStatus('reconnecting');
-            return;
-          }
+            return sessionData;
+          };
+          
+          await retry(checkSession, 3, 500);
           
           // If we're online, check for pending submissions and try to sync
           if (isOnline) {
@@ -203,6 +189,13 @@ function App() {
           // If we've tried multiple times, suggest a manual refresh
           if (reconnectAttempts >= 2) {
             toast.error('Error reconnecting to the server. Please use the refresh button or reload the page.');
+            
+            // Force reset the session if we've tried multiple times
+            setUser(null);
+            setCurrentSessionId(null);
+            resetAll();
+            window.location.reload();
+            return;
           } else {
             toast.error('Error reconnecting to the server. Trying again...');
           }
@@ -228,7 +221,7 @@ function App() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       visibilityChangeInitialized.current = false;
     };
-  }, [user, isOnline, navigate, setUser, resetAll, setCurrentSessionId, setActiveSessions, setIsLoading]);
+  }, [user, isOnline, navigate, setUser, resetAll, setCurrentSessionId, setActiveSessions, setIsLoading, reconnectAttempts, syncStatus]);
 
   // Update sync status based on online status
   useEffect(() => {
@@ -274,13 +267,15 @@ function App() {
       try {
         console.log('Setting up auth...');
         
-        // Check initial session
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        // Check initial session using retry logic
+        const getSession = async () => {
+          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+          
+          if (sessionError) throw sessionError;
+          return sessionData;
+        };
         
-        if (sessionError) {
-          console.error('Session error:', sessionError);
-          throw sessionError;
-        }
+        const sessionData = await retry(getSession, 3, 500);
         
         if (sessionData.session) {
           console.log('User is authenticated:', sessionData.session.user.email);
@@ -400,6 +395,9 @@ function App() {
           />
         )}
         
+        {/* Network Status Indicator - always visible when offline or when there are connection issues */}
+        <NetworkStatusIndicator />
+        
         <Routes>
           <Route path="/login" element={!user ? <LoginPage /> : <Navigate to="/home" />} />
           <Route path="/register" element={!user ? <RegisterPage /> : <Navigate to="/home" />} />
@@ -410,62 +408,62 @@ function App() {
           <Route element={<ProtectedRoute />}>
             <Route element={<AppLayout />}>
               <Route path="/home" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <HomePage />
                 </Suspense>
               } />
               <Route path="/programs" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <PilotProgramsPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <SitesPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <SubmissionsPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/new-submission" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <NewSubmissionPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/submissions/:submissionId/edit" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <SubmissionEditPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/template" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <SiteTemplateManagementPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/audit-log" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <AuditLogPage />
                 </Suspense>
               } />
               <Route path="/programs/:programId/sites/:siteId/audit-log" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <AuditLogPage />
                 </Suspense>
               } />
               <Route path="/user-audit/:userId" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <UserAuditPage />
                 </Suspense>
               } />
               <Route path="/profile" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <UserProfilePage />
                 </Suspense>
               } />
               <Route path="/company" element={
-                <Suspense fallback={<LoadingScreen />}>
+                <Suspense fallback={<LazyLoadingFallback />}>
                   <CompanyManagementPage />
                 </Suspense>
               } />
