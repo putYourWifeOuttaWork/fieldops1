@@ -126,7 +126,7 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
         <div className={`${bgColor} ${textColor} ${borderColor} border rounded-lg shadow-lg p-6 max-w-md text-center`}>
           <RefreshCw className="animate-spin mx-auto mb-4 h-10 w-10 text-error-600" />
           <h3 className="text-xl font-semibold mb-2">Session Interrupted</h3>
-          <p className="mb-4">Your session has been disconnected. Please refresh to resume your work.</p>
+          <p className="mb-4">Your session has been disconnected. Please click to continue</p>
           <Button
             variant="primary"
             size="md"
