@@ -12,7 +12,7 @@ import {
   GasifierFormData
 } from '../utils/submissionUtils';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { withRetry, fetchSubmissionsBySiteId } from '../lib/api';
+import { withRetry } from '../utils/helpers';
 
 interface SubmissionWithCounts extends Submission {
   petri_count: number;
@@ -35,23 +35,35 @@ export function useSubmissions(siteId?: string) {
     queryFn: async () => {
       if (!siteId) return [];
       
-      const { data, error } = await fetchSubmissionsBySiteId(siteId);
+      console.log(`Fetching submissions for site ${siteId}`);
       
-      if (error) {
-        throw error;
+      try {
+        // Use the RPC function with pagination and filtering
+        const { data, error } = await withRetry(() => supabase
+          .rpc('fetch_submissions_for_site', { p_site_id: siteId }));
+        
+        if (error) {
+          console.error('Error fetching submissions:', error);
+          throw error;
+        }
+        
+        console.log(`Successfully fetched ${data?.length || 0} submissions`);
+        
+        // Format the data
+        return data?.map(sub => ({
+          ...sub,
+          petri_count: Number(sub.petri_count) || 0,
+          gasifier_count: Number(sub.gasifier_count) || 0,
+          global_submission_id: Number(sub.global_submission_id) || 0
+        })) || [];
+      } catch (err) {
+        console.error('Error in submissions query:', err);
+        throw err;
       }
-      
-      // Format the data
-      return data?.map(sub => ({
-        ...sub,
-        petri_count: Number(sub.petri_count) || 0,
-        gasifier_count: Number(sub.gasifier_count) || 0,
-        global_submission_id: Number(sub.global_submission_id) || 0
-      })) || [];
     },
     enabled: !!siteId,
-    keepPreviousData: true,
-    refetchOnWindowFocus: false
+    staleTime: 0, // Always refetch when window regains focus
+    refetchOnWindowFocus: true,
   });
 
   // Update the local state whenever the query data changes
@@ -68,8 +80,10 @@ export function useSubmissions(siteId?: string) {
   const fetchSubmissions = useCallback(async () => {
     if (!siteId) return;
     
-    // Refetch using React Query instead of manual fetching
-    await queryClient.refetchQueries({ queryKey: ['submissions', siteId] });
+    console.log('Forcing submissions refetch');
+    // Refetch using React Query
+    await queryClient.invalidateQueries({queryKey: ['submissions', siteId]});
+    await queryClient.refetchQueries({queryKey: ['submissions', siteId]});
   }, [siteId, queryClient]);
 
   // Use React Query for fetching petri observations
@@ -78,10 +92,12 @@ export function useSubmissions(siteId?: string) {
     setError(null);
     
     try {
+      console.log(`Fetching petri observations for submission ${submissionId}`);
       // Check cache first
       const cachedData = queryClient.getQueryData<PetriObservation[]>(['petriObservations', submissionId]);
       
       if (cachedData) {
+        console.log('Using cached petri observation data');
         setLoading(false);
         return cachedData;
       }
@@ -94,14 +110,19 @@ export function useSubmissions(siteId?: string) {
           .eq('submission_id', submissionId)
       );
       
-      if (error) throw error;
+      if (error) {
+        console.error('Error fetching petri observations:', error);
+        throw error;
+      }
+      
+      console.log(`Successfully fetched ${data?.length || 0} petri observations`);
       
       // Cache the result
       queryClient.setQueryData(['petriObservations', submissionId], data);
       
       return data || [];
     } catch (err) {
-      console.error('Error fetching petri observations:', err);
+      console.error('Error in fetchSubmissionPetriObservations:', err);
       setError('Failed to load petri observations');
       return [];
     } finally {
@@ -115,10 +136,12 @@ export function useSubmissions(siteId?: string) {
     setError(null);
     
     try {
+      console.log(`Fetching gasifier observations for submission ${submissionId}`);
       // Check cache first
       const cachedData = queryClient.getQueryData<GasifierObservation[]>(['gasifierObservations', submissionId]);
       
       if (cachedData) {
+        console.log('Using cached gasifier observation data');
         setLoading(false);
         return cachedData;
       }
@@ -131,14 +154,19 @@ export function useSubmissions(siteId?: string) {
           .eq('submission_id', submissionId)
       );
       
-      if (error) throw error;
+      if (error) {
+        console.error('Error fetching gasifier observations:', error);
+        throw error;
+      }
+      
+      console.log(`Successfully fetched ${data?.length || 0} gasifier observations`);
       
       // Cache the result
       queryClient.setQueryData(['gasifierObservations', submissionId], data);
       
       return data || [];
     } catch (err) {
-      console.error('Error fetching gasifier observations:', err);
+      console.error('Error in fetchSubmissionGasifierObservations:', err);
       setError('Failed to load gasifier observations');
       return [];
     } finally {
@@ -176,7 +204,10 @@ export function useSubmissions(siteId?: string) {
       const id = sid || siteId;
       if (!id || !user) throw new Error('Site ID and user are required');
       
+      console.log('Creating submission for site:', id);
+      
       if (!isOnline) {
+        console.log('Creating offline submission');
         // Store submission for offline sync
         const offlineSubmission = {
           submission_id: `offline-${Date.now()}`,
@@ -222,6 +253,7 @@ export function useSubmissions(siteId?: string) {
         return offlineSubmission;
       }
       
+      console.log('Creating online submission');
       // Create submission with retry logic
       const { data, error: submissionError } = await withRetry(() => 
         supabase
@@ -242,7 +274,12 @@ export function useSubmissions(siteId?: string) {
           .single()
       );
       
-      if (submissionError) throw submissionError;
+      if (submissionError) {
+        console.error('Error creating submission:', submissionError);
+        throw submissionError;
+      }
+      
+      console.log('Submission created successfully, processing observations');
 
       // Filter valid form data
       const validPetriForms = petriObservations.filter(p => p.hasData);
@@ -267,7 +304,7 @@ export function useSubmissions(siteId?: string) {
     },
     onSuccess: () => {
       // Invalidate and refetch submissions query to update the list
-      queryClient.invalidateQueries(['submissions', siteId]);
+      queryClient.invalidateQueries({queryKey: ['submissions', siteId]});
       toast.success('Submission created successfully!');
     },
     onError: (error) => {
@@ -337,6 +374,8 @@ export function useSubmissions(siteId?: string) {
     }) => {
       if (!submissionId) throw new Error('Submission ID is required');
       
+      console.log(`Updating submission ${submissionId}`);
+      
       // Update existing submission with retry logic
       const { data, error } = await withRetry(() => 
         supabase
@@ -356,7 +395,12 @@ export function useSubmissions(siteId?: string) {
           .single()
       );
       
-      if (error) throw error;
+      if (error) {
+        console.error('Error updating submission:', error);
+        throw error;
+      }
+      
+      console.log('Submission updated successfully');
 
       // Get the site ID for this submission
       const siteId = data.site_id;
@@ -364,6 +408,8 @@ export function useSubmissions(siteId?: string) {
       // Filter observations based on whether they're dirty or have an observationId
       const validPetriForms = petriObservations.filter(p => p.observationId || p.isDirty);
       const validGasifierForms = gasifierObservations.filter(g => g.observationId || g.isDirty);
+      
+      console.log(`Processing ${validPetriForms.length} petri observations and ${validGasifierForms.length} gasifier observations`);
       
       // Process petri observations
       const petriResult = await updatePetriObservations(validPetriForms, data.submission_id, siteId);
@@ -379,11 +425,12 @@ export function useSubmissions(siteId?: string) {
       };
     },
     onSuccess: (data) => {
+      console.log('Update mutation completed successfully');
       // Invalidate and refetch queries to update the data
-      queryClient.invalidateQueries(['submissions', siteId]);
-      queryClient.invalidateQueries(['submission', data.submission_id]);
-      queryClient.invalidateQueries(['petriObservations', data.submission_id]);
-      queryClient.invalidateQueries(['gasifierObservations', data.submission_id]);
+      queryClient.invalidateQueries({queryKey: ['submissions', siteId]});
+      queryClient.invalidateQueries({queryKey: ['submission', data.submission_id]});
+      queryClient.invalidateQueries({queryKey: ['petriObservations', data.submission_id]});
+      queryClient.invalidateQueries({queryKey: ['gasifierObservations', data.submission_id]});
       
       toast.success('Submission updated successfully!');
     },
@@ -430,6 +477,8 @@ export function useSubmissions(siteId?: string) {
     mutationFn: async (submissionId: string) => {
       if (!submissionId) throw new Error('Submission ID is required');
       
+      console.log(`Deleting submission ${submissionId}`);
+      
       const { error } = await withRetry(() => 
         supabase
           .from('submissions')
@@ -437,8 +486,12 @@ export function useSubmissions(siteId?: string) {
           .eq('submission_id', submissionId)
       );
       
-      if (error) throw error;
+      if (error) {
+        console.error('Error deleting submission:', error);
+        throw error;
+      }
       
+      console.log('Submission deleted successfully');
       return submissionId;
     },
     onSuccess: (submissionId) => {
@@ -448,10 +501,10 @@ export function useSubmissions(siteId?: string) {
       );
       
       // Invalidate and refetch queries
-      queryClient.invalidateQueries(['submissions', siteId]);
-      queryClient.removeQueries(['submission', submissionId]);
-      queryClient.removeQueries(['petriObservations', submissionId]);
-      queryClient.removeQueries(['gasifierObservations', submissionId]);
+      queryClient.invalidateQueries({queryKey: ['submissions', siteId]});
+      queryClient.removeQueries({queryKey: ['submission', submissionId]});
+      queryClient.removeQueries({queryKey: ['petriObservations', submissionId]});
+      queryClient.removeQueries({queryKey: ['gasifierObservations', submissionId]});
       
       toast.success('Submission deleted successfully!');
     },

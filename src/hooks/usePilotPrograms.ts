@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { useAuthStore } from '../stores/authStore';
 import { PilotProgram } from '../lib/types';
@@ -26,7 +26,8 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
     queryKey: ['programs', user?.id],
     queryFn: async () => {
       if (!user) return [];
-
+      
+      console.log('Fetching programs for user:', user.id);
       const { data, error } = await withRetry(() => 
         supabase
           .from('pilot_programs')
@@ -34,19 +35,28 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
           .order('name')
       );
         
-      if (error) throw error;
+      if (error) {
+        console.error('Error fetching programs:', error);
+        throw error;
+      }
+      
+      console.log(`Successfully fetched ${data?.length || 0} programs`);
       return data || [];
     },
     enabled: !!user,
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: 0, // Always refetch on window focus
+    refetchOnWindowFocus: true,
   });
 
   // Use React Query for fetching a single program
   const fetchPilotProgram = async (programId: string): Promise<PilotProgram | null> => {
     try {
+      console.log(`Fetching program with ID: ${programId}`);
+      
       // Check cache first
       const cachedProgram = queryClient.getQueryData<PilotProgram>(['program', programId]);
       if (cachedProgram) {
+        console.log('Using cached program data:', cachedProgram.name);
         return cachedProgram;
       }
       
@@ -62,6 +72,8 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
         console.error('Error fetching pilot program:', error);
         return null;
       }
+      
+      console.log('Successfully fetched program:', data?.name);
       
       // Cache the result
       queryClient.setQueryData(['program', programId], data);
@@ -101,7 +113,7 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
     },
     onSuccess: (data) => {
       // Invalidate and refetch programs query
-      queryClient.invalidateQueries(['programs', user?.id]);
+      queryClient.invalidateQueries({queryKey: ['programs']});
       
       // Add the new program to the cache
       queryClient.setQueryData(['program', data.program_id], data);
@@ -164,7 +176,7 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
     },
     onSuccess: (programId) => {
       // Remove the program from the cache
-      queryClient.removeQueries(['program', programId]);
+      queryClient.removeQueries({queryKey: ['program', programId]});
       
       // Remove the program from the programs list
       queryClient.setQueryData<PilotProgram[]>(['programs', user?.id], (oldData) => {
@@ -208,10 +220,11 @@ export const usePilotPrograms = (): UsePilotProgramsResult => {
     }
   };
 
-  // Refetch programs
+  // Force refetch programs
   const refetchPrograms = useCallback(async () => {
-    await queryClient.refetchQueries(['programs', user?.id]);
-  }, [queryClient, user?.id]);
+    console.log("Forcing program refetch");
+    await queryClient.invalidateQueries({queryKey: ['programs']});
+  }, [queryClient]);
 
   return {
     programs: programsQuery.data || [],

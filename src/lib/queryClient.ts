@@ -9,6 +9,7 @@ const authErrorHandlers: Array<() => void> = [];
 // Register a global auth error handler
 export const registerAuthErrorHandler = (handler: () => void) => {
   authErrorHandlers.push(handler);
+  console.log('Auth error handler registered, total handlers:', authErrorHandlers.length);
 };
 
 // Trigger all registered auth error handlers
@@ -45,14 +46,14 @@ export const handleAuthError = async () => {
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Data will be considered fresh for 5 minutes (300000ms) by default
-      staleTime: 5 * 60 * 1000,
+      // Data will be considered stale immediately on window focus
+      staleTime: 0,
       // Keep unused data in cache for 10 minutes
       gcTime: 10 * 60 * 1000,
       // Retry failed queries 3 times with exponential backoff
       retry: 3,
-      // Start showing loading state only after 500ms to avoid UI flicker on fast connections
-      refetchOnWindowFocus: true, // ENABLED: This will auto-refresh stale data when window regains focus
+      // Always refetch when window regains focus (critical for our issue)
+      refetchOnWindowFocus: true,
       // Use our own error handling
       useErrorBoundary: false,
       // Global error handler for auth errors
@@ -83,3 +84,20 @@ export const queryClient = new QueryClient({
     }
   },
 });
+
+// Set up listener for focus events to invalidate queries
+if (typeof window !== 'undefined') {
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      console.log('Document became visible, invalidating queries...');
+      // Force refetch active queries when tab becomes visible
+      queryClient.invalidateQueries();
+    }
+  });
+
+  // Set up offline/online event listeners
+  window.addEventListener('online', () => {
+    console.log('Connection restored. Invalidating queries...');
+    queryClient.invalidateQueries();
+  });
+}

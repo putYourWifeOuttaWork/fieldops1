@@ -19,10 +19,13 @@ export async function withRetry<T>(
   maxRetries = MAX_RETRIES
 ): Promise<{ data: T | null; error: any }> {
   try {
+    console.log(`Making API call (attempt ${retryCount + 1}/${maxRetries + 1})`);
     const result = await apiCall();
     
     // Check for authentication errors (don't retry these)
     if (result.error) {
+      console.error('API call returned an error:', result.error);
+      
       // Check for specific auth error codes and messages
       const isAuthError = 
         // PostgreSQL auth errors
@@ -119,38 +122,12 @@ export async function withRetry<T>(
 }
 
 /**
- * Creates an enhanced Supabase query function with caching and retry support
- * @returns Enhanced query function
- */
-export const createQueryFn = <T>(
-  queryFn: () => Promise<{ data: T | null; error: any }>,
-  options?: {
-    onError?: (error: any) => void;
-    retries?: number;
-  }
-) => {
-  return async (): Promise<T> => {
-    const { data, error } = await withRetry(queryFn, 0, options?.retries || MAX_RETRIES);
-    
-    if (error) {
-      if (options?.onError) {
-        options.onError(error);
-      } else {
-        console.error('Query error:', error);
-      }
-      throw error;
-    }
-    
-    return data as T;
-  };
-};
-
-/**
  * Enhanced version of fetchSitesByProgramId with retry logic
  */
 export const fetchSitesByProgramId = async (programId: string) => {
   if (!programId) return { data: [], error: null };
   
+  console.log(`Fetching sites for program ${programId}`);
   return withRetry(() => 
     supabase
       .from('sites')
@@ -166,6 +143,7 @@ export const fetchSitesByProgramId = async (programId: string) => {
 export const fetchSubmissionsBySiteId = async (siteId: string) => {
   if (!siteId) return { data: [], error: null };
   
+  console.log(`Fetching submissions for site ${siteId}`);
   return withRetry(() => 
     supabase
       .rpc('fetch_submissions_for_site', { p_site_id: siteId })
@@ -178,6 +156,7 @@ export const fetchSubmissionsBySiteId = async (siteId: string) => {
 export const fetchSiteById = async (siteId: string) => {
   if (!siteId) return { data: null, error: null };
   
+  console.log(`Fetching site ${siteId}`);
   return withRetry(() => 
     supabase
       .from('sites')
