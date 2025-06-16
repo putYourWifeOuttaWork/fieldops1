@@ -19,6 +19,7 @@ import sessionManager from './lib/sessionManager';
 import { useSessionStore } from './stores/sessionStore';
 import { usePilotProgramStore } from './stores/pilotProgramStore';
 import NetworkStatusIndicator from './components/common/NetworkStatusIndicator';
+import { registerAuthErrorHandler } from './lib/queryClient';
 
 // Lazy load pages to improve initial load time
 const HomePage = lazy(() => import('./pages/HomePage'));
@@ -53,6 +54,18 @@ function App() {
   // Add a ref to track if auto-sync has been initialized
   const autoSyncInitialized = useRef(false);
   const visibilityChangeInitialized = useRef(false);
+
+  // Register auth error handler
+  useEffect(() => {
+    // Register a handler for auth errors
+    registerAuthErrorHandler(() => {
+      console.log('Auth error handler triggered in App.tsx');
+      setUser(null);
+      setCurrentSessionId(null);
+      resetAll();
+      // No need to navigate here, the global handler will redirect
+    });
+  }, [setUser, setCurrentSessionId, resetAll, navigate]);
 
   // Check for pending submissions
   useEffect(() => {
