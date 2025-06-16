@@ -113,6 +113,10 @@ function App() {
       if (document.visibilityState === 'visible' && user) {
         console.log('App has come back into focus, checking connection state');
         
+        // *** KEY CHANGE: Force a hard reload immediately when the app comes back into focus ***
+        window.location.reload(true);
+        
+        // The rest of this function will never execute because of the reload
         try {
           // Verify the session is still valid
           const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
