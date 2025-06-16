@@ -20,6 +20,7 @@ import sessionManager from './lib/sessionManager';
 import { useSessionStore } from './stores/sessionStore';
 import { usePilotProgramStore } from './stores/pilotProgramStore';
 import NetworkStatusIndicator from './components/common/NetworkStatusIndicator';
+import { retry } from './utils/helpers';
 
 // Lazy load pages to improve initial load time
 const HomePage = lazy(() => import('./pages/HomePage'));
