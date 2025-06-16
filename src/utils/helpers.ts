@@ -60,6 +60,7 @@ export async function retry<T>(
       
       // Calculate delay with exponential backoff
       const delay = retryDelay * Math.pow(2, i);
+      console.log(`Retry attempt ${i + 1} for operation, waiting ${delay}ms...`);
       
       // Wait before next attempt
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -108,3 +109,40 @@ export function deepEqual(a: any, b: any): boolean {
   
   return false;
 }
+
+/**
+ * Safely access nested properties of an object
+ * @param obj The object to access
+ * @param path Path to the property, e.g. 'user.profile.name'
+ * @param defaultValue Value to return if path doesn't exist
+ */
+export function get<T>(obj: any, path: string, defaultValue: T): T {
+  const keys = path.split('.');
+  let result = obj;
+  
+  for (const key of keys) {
+    if (result === undefined || result === null) {
+      return defaultValue;
+    }
+    result = result[key];
+  }
+  
+  return (result === undefined || result === null) ? defaultValue : result as T;
+}
+
+/**
+ * Generate a range of numbers
+ * @param start Starting number (inclusive)
+ * @param end Ending number (exclusive)
+ * @param step Step between numbers
+ */
+export function range(start: number, end: number, step: number = 1): number[] {
+  const result: number[] = [];
+  for (let i = start; i < end; i += step) {
+    result.push(i);
+  }
+  return result;
+}
+
+// Export withRetry to be used throughout the app
+export { withRetry } from '../lib/api';
