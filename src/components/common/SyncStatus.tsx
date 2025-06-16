@@ -95,11 +95,11 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
         };
       case 'reconnecting':
         return {
-          bgColor: 'bg-warning-100',
-          textColor: 'text-warning-800',
-          borderColor: 'border-warning-200',
+          bgColor: 'bg-error-50',
+          textColor: 'text-error-800',
+          borderColor: 'border-error-200',
           icon: <RefreshCw className="animate-spin" size={18} />,
-          defaultMessage: 'Click Here To Continue'
+          defaultMessage: 'Session Interrupted - Click to Resume'
         };
       default:
         return {
