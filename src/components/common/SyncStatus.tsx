@@ -136,7 +136,7 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
             className="w-full"
             testId="sync-status-refresh"
           >
-            {isRefreshing ? 'Refreshing...' : 'Refresh Now'}
+            {isRefreshing ? 'Refreshing...' : 'Back To Logging!'}
           </Button>
         </div>
       </div>
