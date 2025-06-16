@@ -95,12 +95,13 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
           defaultMessage: errorMessage
         };
       case 'reconnecting':
+        // Changed to use a banner style instead of a modal
         return {
-          bgColor: 'bg-error-50',
+          bgColor: 'bg-error-100',
           textColor: 'text-error-800',
           borderColor: 'border-error-200',
           icon: <RefreshCw className="animate-spin" size={18} />,
-          defaultMessage: 'Session Interrupted - Click to Resume'
+          defaultMessage: 'Session reconnecting... Click to refresh'
         };
       default:
         return {
@@ -116,52 +117,29 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
   const { bgColor, textColor, borderColor, icon, defaultMessage } = getStatusConfig();
   const displayMessage = message || defaultMessage;
 
-  // Special case for reconnecting status - show in center of screen
-  if (status === 'reconnecting') {
-    return (
-      <div 
-        className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center animate-fade-in"
-        data-testid={`sync-status-${status}`}
-      >
-        <div className={`${bgColor} ${textColor} ${borderColor} border rounded-lg shadow-lg p-6 max-w-md text-center`}>
-          <RefreshCw className="animate-spin mx-auto mb-4 h-10 w-10 text-error-600" />
-          <h3 className="text-xl font-semibold mb-2">Session Interrupted</h3>
-          <p className="mb-4">Your session has been disconnected. <br/>Please click to continue</p>
-          <Button
-            variant="primary"
-            size="md"
-            icon={<RefreshCw size={16} />}
-            onClick={handleHardRefresh}
-            isLoading={isRefreshing}
-            className="w-full"
-            testId="sync-status-refresh"
-          >
-            {isRefreshing ? 'Refreshing...' : 'Back To Logging!'}
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  // Now use banner style for all statuses including reconnecting
   return (
     <div
       className={classNames(
-        `fixed top-0 left-0 right-0 z-50 border-b px-4 py-3 flex items-center justify-center space-x-2 animate-fade-in`,
+        `fixed top-0 left-0 right-0 z-50 border-b px-4 py-3 flex items-center justify-between space-x-2 animate-fade-in`,
         bgColor, textColor, borderColor
       )}
       data-testid={`sync-status-${status}`}
     >
-      {icon}
-      <span className="text-sm font-medium">{displayMessage}</span>
+      <div className="flex items-center space-x-2">
+        {icon}
+        <span className="text-sm font-medium">{displayMessage}</span>
+      </div>
       
-      {/* Action buttons - only show one at a time */}
-      {status === 'error' ? (
+      {/* Action buttons based on status */}
+      {status === 'error' || status === 'reconnecting' ? (
         <Button
           variant="outline"
           size="sm"
           icon={<RefreshCw size={14} />}
           onClick={handleHardRefresh}
           isLoading={isRefreshing}
-          className="ml-2 !py-1 !px-2 bg-white"
+          className="!py-1 !px-2 bg-white"
           testId="sync-status-refresh"
         >
           {isRefreshing ? 'Refreshing...' : 'Refresh'}
@@ -170,7 +148,7 @@ const SyncStatus: React.FC<SyncStatusProps> = ({
         status !== 'syncing' && (
           <button 
             onClick={() => setIsVisible(false)}
-            className="ml-2 text-gray-500 hover:text-gray-700"
+            className="text-gray-500 hover:text-gray-700"
             aria-label="Close"
             data-testid="sync-status-close"
           >
