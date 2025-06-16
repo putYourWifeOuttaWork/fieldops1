@@ -11,7 +11,7 @@ export const queryClient = new QueryClient({
       // Retry failed queries 3 times with exponential backoff
       retry: 3,
       // Start showing loading state only after 500ms to avoid UI flicker on fast connections
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus: true, // ENABLED: This will auto-refresh stale data when window regains focus
       // Use our own error handling
       useErrorBoundary: false,
     },
