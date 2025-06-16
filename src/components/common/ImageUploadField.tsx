@@ -49,6 +49,16 @@ const ImageUploadField = ({
   const isExistingImage = initialImageUrl !== undefined && initialImageUrl !== null;
   const hasImage = !!imageFile || !!isExistingImage || !!tempImageKey;
 
+  // Log initial props
+  useEffect(() => {
+    console.log(`ImageUploadField initialized for ${imageId}:`, {
+      initialImageUrl: initialImageUrl ? 'present' : 'not present',
+      initialTempImageKey,
+      submissionSessionId,
+      hasImage: hasImage
+    });
+  }, []);
+
   const validateImageFile = (file: File) => {
     const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     if (!validTypes.includes(file.type)) {
@@ -159,6 +169,13 @@ const ImageUploadField = ({
               fileSize: file.size
             });
 
+            // Ensure onChange is called so parent components know we have a valid image
+            onChange({
+              file,
+              tempImageKey,
+              isDirty: false
+            });
+
             return () => {
               URL.revokeObjectURL(url);
             };
@@ -172,7 +189,7 @@ const ImageUploadField = ({
     };
     
     loadTempImage();
-  }, [tempImageKey, imageFile, imagePreview, imageId]);
+  }, [tempImageKey, imageFile, imagePreview, imageId, onChange]);
 
   const triggerFileInput = () => {
     if (disabled) return;
@@ -217,10 +234,10 @@ const ImageUploadField = ({
   
   // Set imageTouched true for existing images
   useEffect(() => {
-    if (initialImageUrl) {
+    if (initialImageUrl || initialTempImageKey) {
       setImageTouched(true);
     }
-  }, [initialImageUrl]);
+  }, [initialImageUrl, initialTempImageKey]);
 
   return (
     <div className={className}>
