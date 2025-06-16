@@ -5,6 +5,10 @@ import { UserRole } from '../lib/types';
 import useCompanies from './useCompanies';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { withRetry } from '../utils/helpers';
+import { createLogger } from '../utils/logger';
+
+// Create a component-specific logger
+const logger = createLogger('useUserRole');
 
 interface UseUserRoleProps {
   programId?: string;
@@ -45,6 +49,8 @@ export const useUserRole = ({ programId }: UseUserRoleProps = {}): UseUserRoleRe
     queryFn: async () => {
       if (!user || !programId) return null;
 
+      logger.debug(`Fetching user role for programId: ${programId}`);
+      
       const { data, error } = await withRetry(() => 
         supabase
           .from('pilot_program_users')
@@ -54,8 +60,13 @@ export const useUserRole = ({ programId }: UseUserRoleProps = {}): UseUserRoleRe
           .maybeSingle()
       );
 
-      if (error) throw error;
-      return data?.role as UserRole | null;
+      if (error) {
+        logger.error(`Error fetching user role: ${error.message}`);
+        throw error;
+      }
+      
+      // Explicitly return null instead of data?.role which could be undefined
+      return data ? data.role as UserRole : null;
     },
     enabled: !!user && !!programId,
     staleTime: 5 * 60 * 1000, // 5 minutes
@@ -67,11 +78,16 @@ export const useUserRole = ({ programId }: UseUserRoleProps = {}): UseUserRoleRe
     queryFn: async () => {
       if (!user || !programId || !isCompanyAdmin) return false;
       
+      logger.debug(`Checking if user is company admin for program: ${programId}`);
+      
       const { data, error } = await withRetry(() => 
         supabase.rpc('is_company_admin_for_program', { program_id_param: programId })
       );
       
-      if (error) throw error;
+      if (error) {
+        logger.error(`Error checking company admin status: ${error.message}`);
+        throw error;
+      }
       return !!data;
     },
     enabled: !!user && !!programId && !!isCompanyAdmin,

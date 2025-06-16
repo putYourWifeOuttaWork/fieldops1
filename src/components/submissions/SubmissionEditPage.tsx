@@ -22,17 +22,17 @@ import {
   Calendar,
   User
 } from 'lucide-react';
-import { format, formatDistanceToNow } from 'date-fns';
+import { format, formatDistanceToNow, differenceInSeconds, set } from 'date-fns';
 import Button from '../common/Button';
 import Card, { CardHeader, CardContent } from '../common/Card';
 import LoadingScreen from '../common/LoadingScreen';
 import { useAuthStore } from '../../stores/authStore';
-import PetriForm, { PetriFormRef } from '../submissions/PetriForm';
-import GasifierForm, { GasifierFormRef } from '../submissions/GasifierForm';
+import PetriForm, { PetriFormRef } from './PetriForm';
+import GasifierForm, { GasifierFormRef } from './GasifierForm';
 import { toast } from 'react-toastify';
 import { v4 as uuidv4 } from 'uuid';
-import TemplateWarningModal from '../submissions/TemplateWarningModal';
-import ConfirmSubmissionModal from '../submissions/ConfirmSubmissionModal';
+import TemplateWarningModal from './TemplateWarningModal';
+import ConfirmSubmissionModal from './ConfirmSubmissionModal';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus';
 import offlineStorage from '../../utils/offlineStorage';
 import useOfflineSession from '../../hooks/useOfflineSession';
@@ -40,8 +40,8 @@ import sessionManager from '../../lib/sessionManager';
 import { useSessionStore } from '../../stores/sessionStore';
 import useUserRole from '../../hooks/useUserRole';
 import PermissionModal from '../common/PermissionModal';
-import SessionShareModal from '../submissions/SessionShareModal';
-import SubmissionOverviewCard from '../submissions/SubmissionOverviewCard';
+import SessionShareModal from './SessionShareModal';
+import SubmissionOverviewCard from './SubmissionOverviewCard';
 import { useSubmissions } from '../../hooks/useSubmissions';
 import { createLogger } from '../../utils/logger';
 
@@ -115,78 +115,65 @@ const SubmissionEditPage = () => {
     submissionId
   });
 
-  // Check for temp images associated with this session/submission
-  useEffect(() => {
-    const checkForTempImages = async () => {
-      if (!submissionId || !session) return;
-      
+  // Look for temp images and assign them to the correct observations
+  const assignTempImagesToForms = async (currentSessionId: string) => {
+    try {
       logger.debug('Checking for temp images in IndexedDB...');
       
-      try {
-        // List all temp image keys to see what's available
-        const allTempKeys = await offlineStorage.listTempImageKeys();
+      // Get all temp image keys
+      const imageKeys = await offlineStorage.listTempImageKeys();
+      
+      // Filter keys for current session
+      const sessionImageKeys = imageKeys.filter(key => key.startsWith(currentSessionId));
+      
+      if (sessionImageKeys.length > 0) {
+        logger.debug(`Found ${sessionImageKeys.length} temp images for submission ${currentSessionId}: ${JSON.stringify(sessionImageKeys)}`);
         
-        // Find temp images for current submission session
-        const matchingKeys = allTempKeys.filter(key => 
-          key.startsWith(session.session_id)
-        );
-        
-        if (matchingKeys.length > 0) {
-          logger.debug(`Found ${matchingKeys.length} temp images for submission ${session.session_id}:`, matchingKeys);
+        // Look for matching petri observations
+        for (const form of petriForms) {
+          // Check if any key contains both the session ID and the form ID
+          const matchingKey = sessionImageKeys.find(key => 
+            key.includes(form.id)
+          );
           
-          // Now we need to associate these with the appropriate observation forms
-          // We'll do this by extracting the observation ID from the key (format: sessionId-observationId-timestamp)
-          matchingKeys.forEach(key => {
-            const keyParts = key.split('-');
-            // We need at least 3 parts to have a valid key pattern
-            if (keyParts.length >= 3) {
-              // Take the second element as the observation ID
-              const observationId = keyParts.slice(1, -1).join('-'); // This takes everything between first and last dash
-              
-              // Find the matching petri or gasifier form
-              const matchingPetriForm = petriForms.find(form => form.id === observationId);
-              if (matchingPetriForm) {
-                logger.debug(`Found matching temp image key for petri observation ${observationId}: ${key}`);
-                
-                // Update the form data to include this temp image key
-                setPetriObservationData(prevData => ({
-                  ...prevData,
-                  [observationId]: {
-                    ...prevData[observationId],
-                    tempImageKey: key,
-                    hasImage: true,
-                    isValid: true,
-                    isDirty: false
-                  }
-                }));
-              }
-              
-              const matchingGasifierForm = gasifierForms.find(form => form.id === observationId);
-              if (matchingGasifierForm) {
-                logger.debug(`Found matching temp image key for gasifier observation ${observationId}: ${key}`);
-                
-                // Update the form data to include this temp image key
-                setGasifierObservationData(prevData => ({
-                  ...prevData,
-                  [observationId]: {
-                    ...prevData[observationId],
-                    tempImageKey: key,
-                    hasImage: true,
-                    isValid: true,
-                    isDirty: false
-                  }
-                }));
-              }
-            }
-          });
+          if (matchingKey) {
+            logger.debug(`Found matching temp image key for petri observation ${form.id}: ${matchingKey}`);
+            
+            // Update the form to use this temp image key
+            setPetriForms(prevForms => 
+              prevForms.map(f => 
+                f.id === form.id 
+                  ? { ...f, tempImageKey: matchingKey } 
+                  : f
+              )
+            );
+          }
         }
-      } catch (error) {
-        logger.error('Error checking for temp images:', error);
+        
+        // Look for matching gasifier observations (similar logic)
+        for (const form of gasifierForms) {
+          const matchingKey = sessionImageKeys.find(key => 
+            key.includes(form.id)
+          );
+          
+          if (matchingKey) {
+            logger.debug(`Found matching temp image key for gasifier observation ${form.id}: ${matchingKey}`);
+            
+            // Update the form to use this temp image key
+            setGasifierForms(prevForms => 
+              prevForms.map(f => 
+                f.id === form.id 
+                  ? { ...f, tempImageKey: matchingKey } 
+                  : f
+              )
+            );
+          }
+        }
       }
-    };
-    
-    checkForTempImages();
-  }, [session, submissionId, petriForms, gasifierForms]);
+    } catch (error) {
+      logger.error('Error checking for temp images:', error);
+    }
+  };
 
   // Load submission, observations, and session data
   useEffect(() => {
@@ -218,6 +205,9 @@ const SubmissionEditPage = () => {
         // If we have a session, set it in the session store
         if (sessionData) {
           setCurrentSessionId(sessionData.session_id);
+          
+          // Look for temporary images from this session
+          await assignTempImagesToForms(sessionData.session_id);
         }
         
         // Update title in browser
@@ -411,64 +401,6 @@ const SubmissionEditPage = () => {
     const updatedData = { ...gasifierObservationData };
     delete updatedData[id];
     setGasifierObservationData(updatedData);
-  };
-  
-  // Handle petri form updates
-  const handlePetriUpdate = (formId: string, data: any) => {
-    logger.debug(`Petri form ${formId} updated with data:`, {
-      petriCode: data.petriCode,
-      hasImageFile: !!data.imageFile,
-      tempImageKey: data.tempImageKey,
-      isValid: data.isValid,
-      isDirty: data.isDirty,
-      hasImage: data.hasImage
-    });
-    
-    setPetriObservationData(prevData => ({
-      ...prevData,
-      [formId]: {
-        ...data,
-        formId
-      }
-    }));
-    
-    // Update form validation state
-    setPetriForms(prevForms => 
-      prevForms.map(form => 
-        form.id === formId 
-          ? { ...form, isValid: data.isValid, isDirty: data.isDirty || form.isDirty } 
-          : form
-      )
-    );
-  };
-  
-  // Handle gasifier form updates
-  const handleGasifierUpdate = (formId: string, data: any) => {
-    logger.debug(`Gasifier form ${formId} updated with data:`, {
-      gasifierCode: data.gasifierCode,
-      hasImageFile: !!data.imageFile,
-      tempImageKey: data.tempImageKey,
-      isValid: data.isValid,
-      isDirty: data.isDirty,
-      hasImage: data.hasImage
-    });
-    
-    setGasifierObservationData(prevData => ({
-      ...prevData,
-      [formId]: {
-        ...data,
-        formId
-      }
-    }));
-    
-    // Update form validation state
-    setGasifierForms(prevForms => 
-      prevForms.map(form => 
-        form.id === formId 
-          ? { ...form, isValid: data.isValid, isDirty: data.isDirty || form.isDirty } 
-          : form
-      )
-    );
   };
   
   // Handle form submission
@@ -800,53 +732,6 @@ const SubmissionEditPage = () => {
         return <Sun className="text-yellow-500 mr-2" size={18} />;
     }
   };
-  
-  // For debugging purposes only - show tempImageKey in production, this would be removed
-  const renderPetriForm = (form: { id: string; ref: React.RefObject<PetriFormRef>; isValid: boolean; isDirty: boolean; observationId?: string; }) => {
-    const tempImageKey = petriObservationData[form.id]?.tempImageKey;
-    logger.debug(`Rendering PetriForm ${form.id} with tempImageKey: ${tempImageKey || 'undefined'}`);
-    
-    return (
-      <PetriForm
-        key={form.id}
-        id={`petri-form-${form.id}`}
-        formId={form.id}
-        index={petriForms.findIndex(f => f.id === form.id) + 1}
-        siteId={siteId!}
-        submissionSessionId={session?.session_id || submissionId!}
-        ref={form.ref}
-        onUpdate={(data) => handlePetriUpdate(form.id, data)}
-        onRemove={() => removePetriForm(form.id)}
-        showRemoveButton={petriForms.length > 1}
-        initialData={petriObservations.find(obs => obs.observation_id === form.id) ? {
-          petriCode: petriObservations.find(obs => obs.observation_id === form.id).petri_code,
-          imageUrl: petriObservations.find(obs => obs.observation_id === form.id).image_url,
-          tempImageKey: petriObservationData[form.id]?.tempImageKey,
-          plantType: petriObservations.find(obs => obs.observation_id === form.id).plant_type,
-          fungicideUsed: petriObservations.find(obs => obs.observation_id === form.id).fungicide_used,
-          surroundingWaterSchedule: petriObservations.find(obs => obs.observation_id === form.id).surrounding_water_schedule,
-          notes: petriObservations.find(obs => obs.observation_id === form.id).notes || '',
-          placement: petriObservations.find(obs => obs.observation_id === form.id).placement,
-          placement_dynamics: petriObservations.find(obs => obs.observation_id === form.id).placement_dynamics,
-          observationId: petriObservations.find(obs => obs.observation_id === form.id).observation_id,
-          outdoor_temperature: petriObservations.find(obs => obs.observation_id === form.id).outdoor_temperature,
-          outdoor_humidity: petriObservations.find(obs => obs.observation_id === form.id).outdoor_humidity
-        } : {
-          // If no matching observation found but we have data in petriObservationData, use that
-          petriCode: petriObservationData[form.id]?.petriCode || '',
-          tempImageKey: petriObservationData[form.id]?.tempImageKey,
-          plantType: petriObservationData[form.id]?.plantType || 'Other Fresh Perishable',
-          fungicideUsed: petriObservationData[form.id]?.fungicideUsed || 'No',
-          surroundingWaterSchedule: petriObservationData[form.id]?.surroundingWaterSchedule || '',
-          notes: petriObservationData[form.id]?.notes || '',
-          placement: petriObservationData[form.id]?.placement || null,
-          placement_dynamics: petriObservationData[form.id]?.placement_dynamics || null
-        }}
-        disabled={isSessionReadOnly}
-        observationId={form.observationId}
-      />
-    );
-  };
 
   return (
     <div className="animate-fade-in">
@@ -985,7 +870,65 @@ const SubmissionEditPage = () => {
           {isPetriAccordionOpen && (
             <CardContent>
               <div className="space-y-4">
-                {petriForms.map((form) => renderPetriForm(form))}
+                {petriForms.map((form, index) => {
+                  logger.debug(`Rendering PetriForm ${form.id} with tempImageKey: ${form.tempImageKey || 'undefined'}`);
+                  return (
+                    <PetriForm
+                      key={form.id}
+                      id={`petri-form-${form.id}`}
+                      formId={form.id}
+                      index={index + 1}
+                      siteId={siteId!}
+                      submissionSessionId={session?.session_id || submissionId!}
+                      ref={form.ref}
+                      onUpdate={(data) => {
+                        // Store complete data in petriObservationData
+                        setPetriObservationData(prevData => ({
+                          ...prevData,
+                          [form.id]: {
+                            ...data,
+                            formId: form.id
+                          }
+                        }));
+                        
+                        // Update form validation state
+                        setPetriForms(prevForms => 
+                          prevForms.map(f => 
+                            f.id === form.id 
+                              ? { ...f, isValid: data.isValid, isDirty: data.isDirty || f.isDirty } 
+                              : f
+                          )
+                        );
+                        
+                        logger.debug(`Petri form ${form.id} updated with data:`, { 
+                          petriCode: data.petriCode,
+                          hasImageFile: !!data.imageFile,
+                          tempImageKey: data.tempImageKey,
+                          isValid: data.isValid,
+                          isDirty: data.isDirty,
+                          hasImage: data.hasImage
+                        });
+                      }}
+                      onRemove={() => removePetriForm(form.id)}
+                      showRemoveButton={petriForms.length > 1}
+                      initialData={petriObservations.find(obs => obs.observation_id === form.id) ? {
+                        petriCode: petriObservations.find(obs => obs.observation_id === form.id).petri_code,
+                        imageUrl: petriObservations.find(obs => obs.observation_id === form.id).image_url,
+                        plantType: petriObservations.find(obs => obs.observation_id === form.id).plant_type,
+                        fungicideUsed: petriObservations.find(obs => obs.observation_id === form.id).fungicide_used,
+                        surroundingWaterSchedule: petriObservations.find(obs => obs.observation_id === form.id).surrounding_water_schedule,
+                        notes: petriObservations.find(obs => obs.observation_id === form.id).notes || '',
+                        placement: petriObservations.find(obs => obs.observation_id === form.id).placement,
+                        placement_dynamics: petriObservations.find(obs => obs.observation_id === form.id).placement_dynamics,
+                        observationId: petriObservations.find(obs => obs.observation_id === form.id).observation_id,
+                        outdoor_temperature: petriObservations.find(obs => obs.observation_id === form.id).outdoor_temperature,
+                        outdoor_humidity: petriObservations.find(obs => obs.observation_id === form.id).outdoor_humidity
+                      } : undefined}
+                      disabled={isSessionReadOnly}
+                      observationId={form.observationId}
+                    />
+                  );
+                })}
                 
                 {!isSessionReadOnly && (
                   <div className="flex justify-center mt-4">
@@ -1016,22 +959,48 @@ const SubmissionEditPage = () => {
           {isGasifierAccordionOpen && (
             <CardContent>
               <div className="space-y-4">
-                {gasifierForms.map((form) => (
+                {gasifierForms.map((form, index) => (
                   <GasifierForm
                     key={form.id}
                     id={`gasifier-form-${form.id}`}
                     formId={form.id}
-                    index={gasifierForms.findIndex(f => f.id === form.id) + 1}
+                    index={index + 1}
                     siteId={siteId!}
                     submissionSessionId={session?.session_id || submissionId!}
                     ref={form.ref}
-                    onUpdate={(data) => handleGasifierUpdate(form.id, data)}
+                    onUpdate={(data) => {
+                      // Store complete data in gasifierObservationData
+                      setGasifierObservationData(prevData => ({
+                        ...prevData,
+                        [form.id]: {
+                          ...data,
+                          formId: form.id
+                        }
+                      }));
+                      
+                      // Update form validation state
+                      setGasifierForms(prevForms => 
+                        prevForms.map(f => 
+                          f.id === form.id 
+                            ? { ...f, isValid: data.isValid, isDirty: data.isDirty || f.isDirty } 
+                            : f
+                        )
+                      );
+                      
+                      logger.debug(`Gasifier form ${form.id} updated with data:`, { 
+                        gasifierCode: data.gasifierCode,
+                        hasImageFile: !!data.imageFile,
+                        tempImageKey: data.tempImageKey,
+                        isValid: data.isValid,
+                        isDirty: data.isDirty,
+                        hasImage: data.hasImage
+                      });
+                    }}
                     onRemove={() => removeGasifierForm(form.id)}
                     showRemoveButton={gasifierForms.length > 1}
                     initialData={gasifierObservations.find(obs => obs.observation_id === form.id) ? {
                       gasifierCode: gasifierObservations.find(obs => obs.observation_id === form.id).gasifier_code,
                       imageUrl: gasifierObservations.find(obs => obs.observation_id === form.id).image_url,
-                      tempImageKey: gasifierObservationData[form.id]?.tempImageKey,
                       chemicalType: gasifierObservations.find(obs => obs.observation_id === form.id).chemical_type,
                       measure: gasifierObservations.find(obs => obs.observation_id === form.id).measure,
                       anomaly: gasifierObservations.find(obs => obs.observation_id === form.id).anomaly,
@@ -1042,18 +1011,7 @@ const SubmissionEditPage = () => {
                       observationId: gasifierObservations.find(obs => obs.observation_id === form.id).observation_id,
                       outdoor_temperature: gasifierObservations.find(obs => obs.observation_id === form.id).outdoor_temperature,
                       outdoor_humidity: gasifierObservations.find(obs => obs.observation_id === form.id).outdoor_humidity
-                    } : {
-                      // If no matching observation found but we have data in gasifierObservationData, use that
-                      gasifierCode: gasifierObservationData[form.id]?.gasifierCode || '',
-                      tempImageKey: gasifierObservationData[form.id]?.tempImageKey,
-                      chemicalType: gasifierObservationData[form.id]?.chemicalType || 'CLO2',
-                      measure: gasifierObservationData[form.id]?.measure || null,
-                      anomaly: gasifierObservationData[form.id]?.anomaly || false,
-                      placementHeight: gasifierObservationData[form.id]?.placementHeight || null,
-                      directionalPlacement: gasifierObservationData[form.id]?.directionalPlacement || null,
-                      placementStrategy: gasifierObservationData[form.id]?.placementStrategy || null,
-                      notes: gasifierObservationData[form.id]?.notes || ''
-                    }}
+                    } : undefined}
                     disabled={isSessionReadOnly}
                     observationId={form.observationId}
                   />

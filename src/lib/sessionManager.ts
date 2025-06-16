@@ -9,6 +9,10 @@ import {
 import { PetriDefaults, GasifierDefaults, Submission } from './types';
 import { toast } from 'react-toastify';
 import { format, set, isAfter, endOfDay } from 'date-fns';
+import { createLogger } from '../utils/logger';
+
+// Create a module-specific logger
+const logger = createLogger('SessionManager');
 
 /**
  * Creates a new submission session with the provided data
@@ -25,7 +29,7 @@ export const createSubmissionSession = async (
     const petriTemplatesJson = petriTemplates ? JSON.stringify(petriTemplates) : null;
     const gasifierTemplatesJson = gasifierTemplates ? JSON.stringify(gasifierTemplates) : null;
     
-    console.log('Creating session with templates:', {
+    logger.debug('Creating session with templates', {
       petriTemplates: petriTemplatesJson ? `(${petriTemplates?.length} templates)` : 'none',
       gasifierTemplates: gasifierTemplatesJson ? `(${gasifierTemplates?.length} templates)` : 'none'
     });
@@ -39,17 +43,17 @@ export const createSubmissionSession = async (
     });
 
     if (error) {
-      console.error('Error creating submission session:', error);
+      logger.error('Error creating submission session:', error);
       return {
         success: false,
         message: error.message
       };
     }
 
-    console.log('Session created successfully:', data);
+    logger.debug('Session created successfully:', data);
     return data as CreateSessionResponse;
   } catch (err) {
-    console.error('Error in createSubmissionSession:', err);
+    logger.error('Error in createSubmissionSession:', err);
     return {
       success: false,
       message: err instanceof Error ? err.message : 'Unknown error occurred'
@@ -67,16 +71,22 @@ export const updateSessionActivity = async (sessionId: string): Promise<boolean>
       .from('submission_sessions')
       .select('session_start_time, session_status')
       .eq('session_id', sessionId)
-      .single();
+      .maybeSingle();  // Use maybeSingle instead of single to handle cases where the session doesn't exist
 
     if (sessionError) {
-      console.error('Error checking session status:', sessionError);
+      logger.error('Error checking session status:', sessionError);
+      return false;
+    }
+
+    // If session doesn't exist, return false
+    if (!sessionData) {
+      logger.warn(`Session ${sessionId} not found`);
       return false;
     }
 
     // If session is already completed, cancelled, or expired, don't update
     if (['Completed', 'Cancelled', 'Expired', 'Expired-Complete', 'Expired-Incomplete'].includes(sessionData.session_status)) {
-      console.log(`Session ${sessionId} is ${sessionData.session_status}, not updating activity`);
+      logger.debug(`Session ${sessionId} is ${sessionData.session_status}, not updating activity`);
       return false;
     }
 
@@ -86,15 +96,26 @@ export const updateSessionActivity = async (sessionId: string): Promise<boolean>
     const now = new Date();
 
     if (isAfter(now, expirationTime)) {
-      console.log(`Session ${sessionId} has expired, updating status`);
+      logger.debug(`Session ${sessionId} has expired, updating status`);
       // Update session status to the appropriate Expired status based on completion
-      const { data: sessionDetails } = await supabase
+      const { data: sessionDetails, error: detailsError } = await supabase
         .from('submission_sessions')
         .select('percentage_complete')
         .eq('session_id', sessionId)
-        .single();
+        .maybeSingle();
         
-      const newStatus = sessionDetails?.percentage_complete === 100 
+      if (detailsError) {
+        logger.error('Error getting session details:', detailsError);
+        return false;
+      }
+      
+      // Handle case where session details might not exist
+      if (!sessionDetails) {
+        logger.warn(`Session details for ${sessionId} not found during expiration check`);
+        return false;
+      }
+        
+      const newStatus = sessionDetails.percentage_complete === 100 
         ? 'Expired-Complete' 
         : 'Expired-Incomplete';
         
@@ -108,7 +129,7 @@ export const updateSessionActivity = async (sessionId: string): Promise<boolean>
         .eq('session_id', sessionId);
 
       if (updateError) {
-        console.error('Error updating expired session:', updateError);
+        logger.error('Error updating expired session:', updateError);
         return false;
       }
       return true;
@@ -120,13 +141,13 @@ export const updateSessionActivity = async (sessionId: string): Promise<boolean>
     });
 
     if (error) {
-      console.error('Error updating session activity:', error);
+      logger.error('Error updating session activity:', error);
       return false;
     }
 
     return true;
   } catch (err) {
-    console.error('Error in updateSessionActivity:', err);
+    logger.error('Error in updateSessionActivity:', err);
     return false;
   }
 };
@@ -141,7 +162,7 @@ export const completeSubmissionSession = async (sessionId: string): Promise<any>
     });
 
     if (error) {
-      console.error('Error completing submission session:', error);
+      logger.error('Error completing submission session:', error);
       toast.error(`Failed to complete submission: ${error.message}`);
       return {
         success: false,
@@ -152,7 +173,7 @@ export const completeSubmissionSession = async (sessionId: string): Promise<any>
     // Return the entire data object, which includes success, message, and session properties
     return data;
   } catch (err) {
-    console.error('Error in completeSubmissionSession:', err);
+    logger.error('Error in completeSubmissionSession:', err);
     return {
       success: false,
       message: err instanceof Error ? err.message : 'An error occurred while completing the submission'
@@ -170,7 +191,7 @@ export const cancelSubmissionSession = async (sessionId: string): Promise<boolea
     });
         
     if (error) {
-      console.error('Error cancelling submission session:', error);
+      logger.error('Error cancelling submission session:', error);
       toast.error(`Failed to cancel submission: ${error.message}`);
       return false;
     }
@@ -182,7 +203,7 @@ export const cancelSubmissionSession = async (sessionId: string): Promise<boolea
       
     return data;
   } catch (err) {
-    console.error('Error in cancelSubmissionSession:', err);
+    logger.error('Error in cancelSubmissionSession:', err);
     toast.error('Error cancelling submission');
     return false;
   }
@@ -204,7 +225,7 @@ export const shareSubmissionSession = async (
     });
 
     if (error) {
-      console.error('Error sharing submission session:', error);
+      logger.error('Error sharing submission session:', error);
       toast.error(`Failed to share submission: ${error.message}`);
       return { success: false, message: error.message };
     }
@@ -216,7 +237,7 @@ export const shareSubmissionSession = async (
 
     return { success: true, message: 'Session shared successfully', session: data.session };
   } catch (err) {
-    console.error('Error in shareSubmissionSession:', err);
+    logger.error('Error in shareSubmissionSession:', err);
     toast.error('An error occurred while sharing the submission');
     return { success: false, message: 'An unexpected error occurred' };
   }
@@ -233,7 +254,7 @@ export const escalateSubmissionSession = async (sessionId: string, programId: st
     });
     
     if (adminError) {
-      console.error('Error getting admin user ID:', adminError);
+      logger.error('Error getting admin user ID:', adminError);
       return { success: false, message: 'Failed to find an admin for this program' };
     }
     
@@ -252,7 +273,7 @@ export const escalateSubmissionSession = async (sessionId: string, programId: st
     
     return result;
   } catch (err) {
-    console.error('Error in escalateSubmissionSession:', err);
+    logger.error('Error in escalateSubmissionSession:', err);
     toast.error('An error occurred while escalating the submission');
     return { success: false, message: 'An unexpected error occurred' };
   }
@@ -267,14 +288,14 @@ export const getActiveSessions = async (): Promise<ActiveSession[]> => {
     const { data, error } = await supabase.rpc('get_active_sessions_with_details');
 
     if (error) {
-      console.error('Error getting active sessions:', error);
+      logger.error('Error getting active sessions:', error);
       throw error;
     }
 
     // The RPC function already returns data in the format we need
     return data || [];
   } catch (err) {
-    console.error('Error in getActiveSessions:', err);
+    logger.error('Error in getActiveSessions:', err);
     throw err;
   }
 };
@@ -288,16 +309,16 @@ export const getSessionById = async (sessionId: string): Promise<SubmissionSessi
       .from('submission_sessions')
       .select('*')
       .eq('session_id', sessionId)
-      .single();
+      .maybeSingle();  // Use maybeSingle to handle case where session doesn't exist
 
     if (error) {
-      console.error('Error getting session by ID:', error);
+      logger.error('Error getting session by ID:', error);
       return null;
     }
 
     return data as SubmissionSession;
   } catch (err) {
-    console.error('Error in getSessionById:', err);
+    logger.error('Error in getSessionById:', err);
     return null;
   }
 };
@@ -318,17 +339,22 @@ export const getSubmissionWithSession = async (submissionId: string): Promise<{
       });
       
     if (creatorError) {
-      console.error('Error getting submission with creator:', creatorError);
+      logger.error('Error getting submission with creator:', creatorError);
       
       // Fall back to just getting the submission without creator details
       const { data: submissionData, error: submissionError } = await supabase
         .from('submissions')
         .select('*')
         .eq('submission_id', submissionId)
-        .single();
+        .maybeSingle();  // Use maybeSingle to handle case where submission doesn't exist
         
       if (submissionError) {
-        console.error('Error getting submission:', submissionError);
+        logger.error('Error getting submission:', submissionError);
+        return { submission: null, session: null };
+      }
+      
+      if (!submissionData) {
+        logger.warn(`Submission ${submissionId} not found`);
         return { submission: null, session: null };
       }
       
@@ -340,7 +366,7 @@ export const getSubmissionWithSession = async (submissionId: string): Promise<{
         .maybeSingle();
 
       if (sessionError && !sessionError.message.includes('No rows found')) {
-        console.error('Error getting session:', sessionError);
+        logger.error('Error getting session:', sessionError);
       }
       
       return { 
@@ -363,10 +389,10 @@ export const getSubmissionWithSession = async (submissionId: string): Promise<{
         .from('submission_sessions')
         .select('*')
         .eq('submission_id', submissionId)
-        .maybeSingle();
+        .maybeSingle();  // Use maybeSingle to handle case where session doesn't exist
 
       if (sessionError && !sessionError.message.includes('No rows found')) {
-        console.error('Error getting session:', sessionError);
+        logger.error('Error getting session:', sessionError);
       }
 
       // If session exists but might be expired, check expiration
@@ -377,7 +403,7 @@ export const getSubmissionWithSession = async (submissionId: string): Promise<{
 
         // If past expiration time, update session to appropriate Expired status
         if (isAfter(now, expirationTime)) {
-          console.log(`Session ${sessionData.session_id} has expired, updating status`);
+          logger.debug(`Session ${sessionData.session_id} has expired, updating status`);
           
           // Set to Expired-Complete if 100% complete, otherwise Expired-Incomplete
           const newStatus = sessionData.percentage_complete === 100 
@@ -395,7 +421,7 @@ export const getSubmissionWithSession = async (submissionId: string): Promise<{
             .single();
             
           if (updateError) {
-            console.error('Error updating expired session:', updateError);
+            logger.error('Error updating expired session:', updateError);
             // Still return the session with original status
             return { 
               submission: submissionData as Submission, 
@@ -422,7 +448,7 @@ export const getSubmissionWithSession = async (submissionId: string): Promise<{
     
     return { submission: null, session: null, creator: null };
   } catch (err) {
-    console.error('Error in getSubmissionWithSession:', err);
+    logger.error('Error in getSubmissionWithSession:', err);
     return { submission: null, session: null };
   }
 };
