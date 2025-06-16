@@ -2,6 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import { Upload, Check, AlertCircle, XCircle } from 'lucide-react';
 import offlineStorage from '../../utils/offlineStorage';
 import useWeather from '../../hooks/useWeather';
+import { createLogger } from '../../utils/logger';
+
+// Create a component-specific logger
+const logger = createLogger('ImageUploadField');
 
 interface ImageUploadFieldProps {
   label: string;
@@ -51,13 +55,13 @@ const ImageUploadField = ({
 
   // Log initial props
   useEffect(() => {
-    console.log(`ImageUploadField initialized for ${imageId}:`, {
+    logger.debug(`Field initialized for ${imageId}`, {
       initialImageUrl: initialImageUrl ? 'present' : 'not present',
       initialTempImageKey,
       submissionSessionId,
-      hasImage: hasImage
+      hasImage
     });
-  }, []);
+  }, [imageId, initialImageUrl, initialTempImageKey, submissionSessionId, hasImage]);
 
   const validateImageFile = (file: File) => {
     const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -95,7 +99,7 @@ const ImageUploadField = ({
         const fileBlob = new Blob([await file.arrayBuffer()], { type: file.type });
         
         await offlineStorage.saveTempImage(newTempKey, fileBlob);
-        console.log(`Image saved with key: ${newTempKey}`, {
+        logger.debug(`Image saved with key: ${newTempKey}`, {
           fileSize: file.size,
           fileType: file.type,
           imageId,
@@ -122,7 +126,7 @@ const ImageUploadField = ({
           outdoor_humidity: currentConditions?.RelativeHumidity || currentConditions?.humidity
         };
 
-        console.log('About to call onChange with image data:', { 
+        logger.debug('About to call onChange with image data', { 
           filePresent: !!file, 
           tempKey: newTempKey,
           environmentalData
@@ -137,7 +141,7 @@ const ImageUploadField = ({
         });
         
       } catch (error) {
-        console.error('Error storing image:', error);
+        logger.error('Error storing image:', error);
         setUploadError('Failed to store image for offline use');
         setImageFile(null);
         setTempImageKey(undefined);
@@ -152,7 +156,7 @@ const ImageUploadField = ({
     const loadTempImage = async () => {
       if (tempImageKey && !imageFile && !imagePreview) {
         try {
-          console.log(`Loading temp image with key: ${tempImageKey}`);
+          logger.debug(`Loading temp image with key: ${tempImageKey}`);
           const blob = await offlineStorage.getTempImage(tempImageKey);
           
           if (blob) {
@@ -162,7 +166,7 @@ const ImageUploadField = ({
             const url = URL.createObjectURL(blob);
             setImagePreview(url);
             
-            console.log(`Successfully loaded temp image for key: ${tempImageKey}`, {
+            logger.debug(`Successfully loaded temp image for key: ${tempImageKey}`, {
               blobSize: blob.size,
               blobType: blob.type,
               fileCreated: !!file,
@@ -180,10 +184,10 @@ const ImageUploadField = ({
               URL.revokeObjectURL(url);
             };
           } else {
-            console.log(`No temp image found for key: ${tempImageKey}`);
+            logger.debug(`No temp image found for key: ${tempImageKey}`);
           }
         } catch (error) {
-          console.error(`Error loading temp image for key ${tempImageKey}:`, error);
+          logger.error(`Error loading temp image for key ${tempImageKey}:`, error);
         }
       }
     };
@@ -207,14 +211,14 @@ const ImageUploadField = ({
     
     if (tempImageKey) {
       try {
-        console.log(`Deleting temp image with key: ${tempImageKey}`);
+        logger.debug(`Deleting temp image with key: ${tempImageKey}`);
         offlineStorage.deleteTempImage(tempImageKey);
       } catch (error) {
-        console.error('Error deleting temp image:', error);
+        logger.error('Error deleting temp image:', error);
       }
     }
     
-    console.log('Image cleared, calling onChange with null file');
+    logger.debug('Image cleared, calling onChange with null file');
     onChange({
       file: null,
       imageUrl: undefined,

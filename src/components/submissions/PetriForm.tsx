@@ -5,6 +5,10 @@ import { Trash2, MapPin, ChevronDown, ChevronUp } from 'lucide-react';
 import Button from '../common/Button';
 import ImageUploadField from '../common/ImageUploadField';
 import { PetriPlacement, PetriPlacementDynamics } from '../../lib/types';
+import { createLogger } from '../../utils/logger';
+
+// Create a component-specific logger
+const logger = createLogger('PetriForm');
 
 interface PetriFormProps {
   id: string;
@@ -191,7 +195,7 @@ const PetriForm = forwardRef<PetriFormRef, PetriFormProps>(({
     outdoor_humidity?: number;
     isDirty: boolean;
   }) => {
-    console.log('PetriForm handleImageChange called with:', {
+    logger.debug(`handleImageChange called with:`, {
       hasFile: !!data.file,
       fileSize: data.file?.size,
       tempImageKey: data.tempImageKey,
@@ -219,7 +223,7 @@ const PetriForm = forwardRef<PetriFormRef, PetriFormProps>(({
   useEffect(() => {
     // Only update if there's data to report or this is a form with initial data
     if (hasData || initialData) {
-      console.log('PetriForm useEffect updating parent with:', { 
+      logger.debug(`useEffect updating parent with:`, { 
         petriCode: formik.values.petriCode,
         hasImageFile: !!imageFile,
         hasInitialImageUrl: !!(initialData?.observationId && initialData?.imageUrl),
@@ -276,7 +280,8 @@ const PetriForm = forwardRef<PetriFormRef, PetriFormProps>(({
     initialData?.placement_dynamics,
     initialData?.plantType,
     observationId,
-    isDirty
+    isDirty,
+    onUpdate
   ]);
 
   return (
@@ -473,7 +478,8 @@ const PetriForm = forwardRef<PetriFormRef, PetriFormProps>(({
           </div>
         </div>
       )}
-      
+
+      {/* Hidden fields for plant type - hardcoded for now */}
       <input 
         type="hidden"
         name="plantType"

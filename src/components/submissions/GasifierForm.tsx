@@ -5,6 +5,10 @@ import { Trash2, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import Button from '../common/Button';
 import ImageUploadField from '../common/ImageUploadField';
 import { ChemicalType, PlacementHeight, DirectionalPlacement, PlacementStrategy } from '../../lib/types';
+import { createLogger } from '../../utils/logger';
+
+// Create a component-specific logger
+const logger = createLogger('GasifierForm');
 
 interface GasifierFormProps {
   id: string;
@@ -216,7 +220,7 @@ const GasifierForm = forwardRef<GasifierFormRef, GasifierFormProps>(({
     outdoor_humidity?: number;
     isDirty: boolean;
   }) => {
-    console.log('GasifierForm handleImageChange called with:', {
+    logger.debug('handleImageChange called with:', {
       hasFile: !!data.file,
       fileSize: data.file?.size,
       tempImageKey: data.tempImageKey,
@@ -244,7 +248,7 @@ const GasifierForm = forwardRef<GasifierFormRef, GasifierFormProps>(({
   useEffect(() => {
     // Only update if there's data to report or this is a form with initial data
     if (hasData || initialData) {
-      console.log('GasifierForm useEffect updating parent with:', { 
+      logger.debug('useEffect updating parent with:', { 
         gasifierCode: formik.values.gasifierCode,
         hasImageFile: !!imageFile,
         hasInitialImageUrl: !!(initialData?.observationId && initialData?.imageUrl),
@@ -303,7 +307,8 @@ const GasifierForm = forwardRef<GasifierFormRef, GasifierFormProps>(({
     initialData?.observationId,
     initialData?.imageUrl,
     observationId,
-    isDirty
+    isDirty,
+    onUpdate
   ]);
 
   return (

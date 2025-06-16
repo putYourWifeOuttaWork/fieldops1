@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabaseClient';
 import { usePilotProgramStore } from '../../stores/pilotProgramStore';
@@ -43,7 +43,10 @@ import PermissionModal from '../common/PermissionModal';
 import SessionShareModal from '../submissions/SessionShareModal';
 import SubmissionOverviewCard from '../submissions/SubmissionOverviewCard';
 import { useSubmissions } from '../../hooks/useSubmissions';
-import { debounce } from '../../utils/helpers';
+import { createLogger } from '../../utils/logger';
+
+// Create a component-specific logger
+const logger = createLogger('SubmissionEditPage');
 
 const SubmissionEditPage = () => {
   const { programId, siteId, submissionId } = useParams<{ programId: string; siteId: string; submissionId: string }>();
@@ -78,7 +81,6 @@ const SubmissionEditPage = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [showTemplateWarning, setShowTemplateWarning] = useState<'Petri' | 'Gasifier' | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
-  const [isAutoSaving, setIsAutoSaving] = useState(false);
   
   // Session state
   const [session, setSession] = useState<any>(null);
@@ -100,7 +102,6 @@ const SubmissionEditPage = () => {
   const isOnline = useOnlineStatus();
   
   const sessionTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const autoSaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
   // Use the offline session hook to load and manage session data
   const { 
@@ -114,24 +115,78 @@ const SubmissionEditPage = () => {
     submissionId
   });
 
-  // Debounced save function to prevent multiple saves in rapid succession
-  const debouncedSave = useCallback(
-    debounce(() => {
-      if (!isAutoSaving) {
-        console.log('Auto-saving submission due to image change');
-        setIsAutoSaving(true);
-        handleSave()
-          .then(() => {
-            // Only show toast for successful auto-saves
-            toast.info('Changes automatically saved');
-          })
-          .finally(() => {
-            setIsAutoSaving(false);
+  // Check for temp images associated with this session/submission
+  useEffect(() => {
+    const checkForTempImages = async () => {
+      if (!submissionId || !session) return;
+      
+      logger.debug('Checking for temp images in IndexedDB...');
+      
+      try {
+        // List all temp image keys to see what's available
+        const allTempKeys = await offlineStorage.listTempImageKeys();
+        
+        // Find temp images for current submission session
+        const matchingKeys = allTempKeys.filter(key => 
+          key.startsWith(session.session_id)
+        );
+        
+        if (matchingKeys.length > 0) {
+          logger.debug(`Found ${matchingKeys.length} temp images for submission ${session.session_id}:`, matchingKeys);
+          
+          // Now we need to associate these with the appropriate observation forms
+          // We'll do this by extracting the observation ID from the key (format: sessionId-observationId-timestamp)
+          matchingKeys.forEach(key => {
+            const keyParts = key.split('-');
+            // We need at least 3 parts to have a valid key pattern
+            if (keyParts.length >= 3) {
+              // Take the second element as the observation ID
+              const observationId = keyParts.slice(1, -1).join('-'); // This takes everything between first and last dash
+              
+              // Find the matching petri or gasifier form
+              const matchingPetriForm = petriForms.find(form => form.id === observationId);
+              if (matchingPetriForm) {
+                logger.debug(`Found matching temp image key for petri observation ${observationId}: ${key}`);
+                
+                // Update the form data to include this temp image key
+                setPetriObservationData(prevData => ({
+                  ...prevData,
+                  [observationId]: {
+                    ...prevData[observationId],
+                    tempImageKey: key,
+                    hasImage: true,
+                    isValid: true,
+                    isDirty: false
+                  }
+                }));
+              }
+              
+              const matchingGasifierForm = gasifierForms.find(form => form.id === observationId);
+              if (matchingGasifierForm) {
+                logger.debug(`Found matching temp image key for gasifier observation ${observationId}: ${key}`);
+                
+                // Update the form data to include this temp image key
+                setGasifierObservationData(prevData => ({
+                  ...prevData,
+                  [observationId]: {
+                    ...prevData[observationId],
+                    tempImageKey: key,
+                    hasImage: true,
+                    isValid: true,
+                    isDirty: false
+                  }
+                }));
+              }
+            }
           });
+        }
+      } catch (error) {
+        logger.error('Error checking for temp images:', error);
       }
-    }, 1500), // Debounce for 1.5 seconds
-    [isAutoSaving]
-  );
+    };
+    
+    checkForTempImages();
+  }, [session, submissionId, petriForms, gasifierForms]);
 
   // Load submission, observations, and session data
   useEffect(() => {
@@ -304,7 +359,7 @@ const SubmissionEditPage = () => {
           );
         }
       } catch (error) {
-        console.error('Error loading submission data:', error);
+        logger.error('Error loading submission data:', error);
         toast.error('Failed to load submission data');
       } finally {
         setLoading(false);
@@ -356,6 +411,64 @@ const SubmissionEditPage = () => {
     const updatedData = { ...gasifierObservationData };
     delete updatedData[id];
     setGasifierObservationData(updatedData);
+  };
+  
+  // Handle petri form updates
+  const handlePetriUpdate = (formId: string, data: any) => {
+    logger.debug(`Petri form ${formId} updated with data:`, {
+      petriCode: data.petriCode,
+      hasImageFile: !!data.imageFile,
+      tempImageKey: data.tempImageKey,
+      isValid: data.isValid,
+      isDirty: data.isDirty,
+      hasImage: data.hasImage
+    });
+    
+    setPetriObservationData(prevData => ({
+      ...prevData,
+      [formId]: {
+        ...data,
+        formId
+      }
+    }));
+    
+    // Update form validation state
+    setPetriForms(prevForms => 
+      prevForms.map(form => 
+        form.id === formId 
+          ? { ...form, isValid: data.isValid, isDirty: data.isDirty || form.isDirty } 
+          : form
+      )
+    );
+  };
+  
+  // Handle gasifier form updates
+  const handleGasifierUpdate = (formId: string, data: any) => {
+    logger.debug(`Gasifier form ${formId} updated with data:`, {
+      gasifierCode: data.gasifierCode,
+      hasImageFile: !!data.imageFile,
+      tempImageKey: data.tempImageKey,
+      isValid: data.isValid,
+      isDirty: data.isDirty,
+      hasImage: data.hasImage
+    });
+    
+    setGasifierObservationData(prevData => ({
+      ...prevData,
+      [formId]: {
+        ...data,
+        formId
+      }
+    }));
+    
+    // Update form validation state
+    setGasifierForms(prevForms => 
+      prevForms.map(form => 
+        form.id === formId 
+          ? { ...form, isValid: data.isValid, isDirty: data.isDirty || form.isDirty } 
+          : form
+      )
+    );
   };
   
   // Handle form submission
@@ -485,9 +598,7 @@ const SubmissionEditPage = () => {
         setPetriForms(forms => forms.map(form => ({...form, isDirty: false})));
         setGasifierForms(forms => forms.map(form => ({...form, isDirty: false})));
         
-        if (!isAutoSaving) {
-          toast.success('Submission saved successfully');
-        }
+        toast.success('Submission saved successfully');
       } else {
         // If offline, store the changes locally
         await offlineStorage.saveSubmissionOffline(
@@ -496,18 +607,11 @@ const SubmissionEditPage = () => {
           validGasifierData
         );
         
-        if (!isAutoSaving) {
-          toast.info('Changes saved locally and will sync when online');
-        }
+        toast.info('Changes saved locally and will sync when online');
       }
-      
-      return true;
     } catch (error) {
-      console.error('Error saving submission:', error);
-      if (!isAutoSaving) {
-        toast.error('Failed to save submission');
-      }
-      return false;
+      logger.error('Error saving submission:', error);
+      toast.error('Failed to save submission');
     } finally {
       setIsSaving(false);
     }
@@ -567,7 +671,7 @@ const SubmissionEditPage = () => {
         throw new Error(result.message || 'Failed to complete session');
       }
     } catch (error) {
-      console.error('Error completing session:', error);
+      logger.error('Error completing session:', error);
       toast.error('Failed to complete submission');
     } finally {
       setIsSaving(false);
@@ -600,7 +704,7 @@ const SubmissionEditPage = () => {
         throw new Error(message || 'Failed to cancel session');
       }
     } catch (error) {
-      console.error('Error cancelling session:', error);
+      logger.error('Error cancelling session:', error);
       toast.error('Failed to cancel submission');
     } finally {
       setIsSaving(false);
@@ -617,114 +721,6 @@ const SubmissionEditPage = () => {
     
     // Show sharing modal
     setShowShareModal(true);
-  };
-  
-  // Update petri observation data when a form changes
-  const handlePetriUpdate = (formId: string, data: any) => {
-    // Update the petriData state
-    setPetriObservationData(prevData => {
-      const existingIndex = Object.keys(prevData).findIndex(key => key === formId);
-      
-      if (existingIndex >= 0) {
-        return { 
-          ...prevData, 
-          [formId]: { 
-            ...data, 
-            formId 
-          }
-        };
-      } else {
-        return { 
-          ...prevData, 
-          [formId]: { 
-            ...data, 
-            formId 
-          }
-        };
-      }
-    });
-    
-    // Update the form's validity in the petriForms state
-    setPetriForms(prevForms => {
-      return prevForms.map(form => {
-        if (form.id === formId) {
-          return { 
-            ...form, 
-            isValid: data.isValid, 
-            isDirty: data.isDirty || form.isDirty,
-            observationId: data.observationId // Ensure observationId is properly stored
-          };
-        }
-        return form;
-      });
-    });
-    
-    // AUTO-SAVE: If the form is marked as dirty (image uploaded/cleared), trigger save
-    if (data.isDirty) {
-      console.log("Petri image changed, scheduling auto-save...");
-      
-      // Clear any existing timeout to prevent multiple saves
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-      
-      // Schedule the debounced save
-      debouncedSave();
-    }
-  };
-  
-  // Update gasifier observation data when a form changes
-  const handleGasifierUpdate = (formId: string, data: any) => {
-    // Update the gasifierData state
-    setGasifierObservationData(prevData => {
-      const existingIndex = Object.keys(prevData).findIndex(key => key === formId);
-      
-      if (existingIndex >= 0) {
-        return { 
-          ...prevData, 
-          [formId]: { 
-            ...data, 
-            formId 
-          }
-        };
-      } else {
-        return { 
-          ...prevData, 
-          [formId]: { 
-            ...data, 
-            formId 
-          }
-        };
-      }
-    });
-    
-    // Update the form's validity in the gasifierForms state
-    setGasifierForms(prevForms => {
-      return prevForms.map(form => {
-        if (form.id === formId) {
-          return { 
-            ...form, 
-            isValid: data.isValid, 
-            isDirty: data.isDirty || form.isDirty,
-            observationId: data.observationId // Ensure observationId is properly stored
-          };
-        }
-        return form;
-      });
-    });
-    
-    // AUTO-SAVE: If the form is marked as dirty (image uploaded/cleared), trigger save
-    if (data.isDirty) {
-      console.log("Gasifier image changed, scheduling auto-save...");
-      
-      // Clear any existing timeout to prevent multiple saves
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-      
-      // Schedule the debounced save
-      debouncedSave();
-    }
   };
   
   // Update completed petri count
@@ -768,15 +764,6 @@ const SubmissionEditPage = () => {
     };
   }, [session]);
 
-  // Clean up auto-save timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (autoSaveTimeoutRef.current) {
-        clearTimeout(autoSaveTimeoutRef.current);
-      }
-    };
-  }, []);
-
   if (loading) {
     return <LoadingScreen />;
   }
@@ -812,6 +799,53 @@ const SubmissionEditPage = () => {
       default:
         return <Sun className="text-yellow-500 mr-2" size={18} />;
     }
+  };
+  
+  // For debugging purposes only - show tempImageKey in production, this would be removed
+  const renderPetriForm = (form: { id: string; ref: React.RefObject<PetriFormRef>; isValid: boolean; isDirty: boolean; observationId?: string; }) => {
+    const tempImageKey = petriObservationData[form.id]?.tempImageKey;
+    logger.debug(`Rendering PetriForm ${form.id} with tempImageKey: ${tempImageKey || 'undefined'}`);
+    
+    return (
+      <PetriForm
+        key={form.id}
+        id={`petri-form-${form.id}`}
+        formId={form.id}
+        index={petriForms.findIndex(f => f.id === form.id) + 1}
+        siteId={siteId!}
+        submissionSessionId={session?.session_id || submissionId!}
+        ref={form.ref}
+        onUpdate={(data) => handlePetriUpdate(form.id, data)}
+        onRemove={() => removePetriForm(form.id)}
+        showRemoveButton={petriForms.length > 1}
+        initialData={petriObservations.find(obs => obs.observation_id === form.id) ? {
+          petriCode: petriObservations.find(obs => obs.observation_id === form.id).petri_code,
+          imageUrl: petriObservations.find(obs => obs.observation_id === form.id).image_url,
+          tempImageKey: petriObservationData[form.id]?.tempImageKey,
+          plantType: petriObservations.find(obs => obs.observation_id === form.id).plant_type,
+          fungicideUsed: petriObservations.find(obs => obs.observation_id === form.id).fungicide_used,
+          surroundingWaterSchedule: petriObservations.find(obs => obs.observation_id === form.id).surrounding_water_schedule,
+          notes: petriObservations.find(obs => obs.observation_id === form.id).notes || '',
+          placement: petriObservations.find(obs => obs.observation_id === form.id).placement,
+          placement_dynamics: petriObservations.find(obs => obs.observation_id === form.id).placement_dynamics,
+          observationId: petriObservations.find(obs => obs.observation_id === form.id).observation_id,
+          outdoor_temperature: petriObservations.find(obs => obs.observation_id === form.id).outdoor_temperature,
+          outdoor_humidity: petriObservations.find(obs => obs.observation_id === form.id).outdoor_humidity
+        } : {
+          // If no matching observation found but we have data in petriObservationData, use that
+          petriCode: petriObservationData[form.id]?.petriCode || '',
+          tempImageKey: petriObservationData[form.id]?.tempImageKey,
+          plantType: petriObservationData[form.id]?.plantType || 'Other Fresh Perishable',
+          fungicideUsed: petriObservationData[form.id]?.fungicideUsed || 'No',
+          surroundingWaterSchedule: petriObservationData[form.id]?.surroundingWaterSchedule || '',
+          notes: petriObservationData[form.id]?.notes || '',
+          placement: petriObservationData[form.id]?.placement || null,
+          placement_dynamics: petriObservationData[form.id]?.placement_dynamics || null
+        }}
+        disabled={isSessionReadOnly}
+        observationId={form.observationId}
+      />
+    );
   };
 
   return (
@@ -850,7 +884,7 @@ const SubmissionEditPage = () => {
               <Button
                 variant="outline"
                 onClick={handleSave}
-                isLoading={isSaving || isAutoSaving}
+                isLoading={isSaving}
                 disabled={!canEditSubmission}
                 icon={<Save size={16} />}
                 testId="save-submission-button"
@@ -951,56 +985,7 @@ const SubmissionEditPage = () => {
           {isPetriAccordionOpen && (
             <CardContent>
               <div className="space-y-4">
-                {petriForms.map((form, index) => (
-                  <PetriForm
-                    key={form.id}
-                    id={`petri-form-${form.id}`}
-                    formId={form.id}
-                    index={index + 1}
-                    siteId={siteId!}
-                    submissionSessionId={session?.session_id || submissionId!}
-                    ref={form.ref}
-                    onUpdate={(data) => {
-                      // Store complete data in petriObservationData
-                      setPetriObservationData(prevData => ({
-                        ...prevData,
-                        [form.id]: {
-                          ...data,
-                          formId: form.id
-                        }
-                      }));
-                      
-                      // Update form validation state
-                      setPetriForms(prevForms => 
-                        prevForms.map(f => 
-                          f.id === form.id 
-                            ? { ...f, isValid: data.isValid, isDirty: data.isDirty || f.isDirty } 
-                            : f
-                        )
-                      );
-
-                      // Now call handlePetriUpdate with this data
-                      handlePetriUpdate(form.id, data);
-                    }}
-                    onRemove={() => removePetriForm(form.id)}
-                    showRemoveButton={petriForms.length > 1}
-                    initialData={petriObservations.find(obs => obs.observation_id === form.id) ? {
-                      petriCode: petriObservations.find(obs => obs.observation_id === form.id).petri_code,
-                      imageUrl: petriObservations.find(obs => obs.observation_id === form.id).image_url,
-                      plantType: petriObservations.find(obs => obs.observation_id === form.id).plant_type,
-                      fungicideUsed: petriObservations.find(obs => obs.observation_id === form.id).fungicide_used,
-                      surroundingWaterSchedule: petriObservations.find(obs => obs.observation_id === form.id).surrounding_water_schedule,
-                      notes: petriObservations.find(obs => obs.observation_id === form.id).notes || '',
-                      placement: petriObservations.find(obs => obs.observation_id === form.id).placement,
-                      placement_dynamics: petriObservations.find(obs => obs.observation_id === form.id).placement_dynamics,
-                      observationId: petriObservations.find(obs => obs.observation_id === form.id).observation_id,
-                      outdoor_temperature: petriObservations.find(obs => obs.observation_id === form.id).outdoor_temperature,
-                      outdoor_humidity: petriObservations.find(obs => obs.observation_id === form.id).outdoor_humidity
-                    } : undefined}
-                    disabled={isSessionReadOnly}
-                    observationId={form.observationId}
-                  />
-                ))}
+                {petriForms.map((form) => renderPetriForm(form))}
                 
                 {!isSessionReadOnly && (
                   <div className="flex justify-center mt-4">
@@ -1031,42 +1016,22 @@ const SubmissionEditPage = () => {
           {isGasifierAccordionOpen && (
             <CardContent>
               <div className="space-y-4">
-                {gasifierForms.map((form, index) => (
+                {gasifierForms.map((form) => (
                   <GasifierForm
                     key={form.id}
                     id={`gasifier-form-${form.id}`}
                     formId={form.id}
-                    index={index + 1}
+                    index={gasifierForms.findIndex(f => f.id === form.id) + 1}
                     siteId={siteId!}
                     submissionSessionId={session?.session_id || submissionId!}
                     ref={form.ref}
-                    onUpdate={(data) => {
-                      // Store complete data in gasifierObservationData
-                      setGasifierObservationData(prevData => ({
-                        ...prevData,
-                        [form.id]: {
-                          ...data,
-                          formId: form.id
-                        }
-                      }));
-                      
-                      // Update form validation state
-                      setGasifierForms(prevForms => 
-                        prevForms.map(f => 
-                          f.id === form.id 
-                            ? { ...f, isValid: data.isValid, isDirty: data.isDirty || f.isDirty } 
-                            : f
-                        )
-                      );
-
-                      // Now call handleGasifierUpdate with this data
-                      handleGasifierUpdate(form.id, data);
-                    }}
+                    onUpdate={(data) => handleGasifierUpdate(form.id, data)}
                     onRemove={() => removeGasifierForm(form.id)}
                     showRemoveButton={gasifierForms.length > 1}
                     initialData={gasifierObservations.find(obs => obs.observation_id === form.id) ? {
                       gasifierCode: gasifierObservations.find(obs => obs.observation_id === form.id).gasifier_code,
                       imageUrl: gasifierObservations.find(obs => obs.observation_id === form.id).image_url,
+                      tempImageKey: gasifierObservationData[form.id]?.tempImageKey,
                       chemicalType: gasifierObservations.find(obs => obs.observation_id === form.id).chemical_type,
                       measure: gasifierObservations.find(obs => obs.observation_id === form.id).measure,
                       anomaly: gasifierObservations.find(obs => obs.observation_id === form.id).anomaly,
@@ -1077,7 +1042,18 @@ const SubmissionEditPage = () => {
                       observationId: gasifierObservations.find(obs => obs.observation_id === form.id).observation_id,
                       outdoor_temperature: gasifierObservations.find(obs => obs.observation_id === form.id).outdoor_temperature,
                       outdoor_humidity: gasifierObservations.find(obs => obs.observation_id === form.id).outdoor_humidity
-                    } : undefined}
+                    } : {
+                      // If no matching observation found but we have data in gasifierObservationData, use that
+                      gasifierCode: gasifierObservationData[form.id]?.gasifierCode || '',
+                      tempImageKey: gasifierObservationData[form.id]?.tempImageKey,
+                      chemicalType: gasifierObservationData[form.id]?.chemicalType || 'CLO2',
+                      measure: gasifierObservationData[form.id]?.measure || null,
+                      anomaly: gasifierObservationData[form.id]?.anomaly || false,
+                      placementHeight: gasifierObservationData[form.id]?.placementHeight || null,
+                      directionalPlacement: gasifierObservationData[form.id]?.directionalPlacement || null,
+                      placementStrategy: gasifierObservationData[form.id]?.placementStrategy || null,
+                      notes: gasifierObservationData[form.id]?.notes || ''
+                    }}
                     disabled={isSessionReadOnly}
                     observationId={form.observationId}
                   />
@@ -1241,7 +1217,7 @@ const SubmissionEditPage = () => {
           <Button
             variant="outline"
             onClick={handleSave}
-            isLoading={isSaving || isAutoSaving}
+            isLoading={isSaving}
             className="flex-1"
             disabled={!canEditSubmission}
           >

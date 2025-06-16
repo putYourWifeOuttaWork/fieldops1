@@ -9,6 +9,28 @@ import App from './App';
 import './index.css';
 import 'react-toastify/dist/ReactToastify.css';
 import ErrorBoundary from './components/common/ErrorBoundary';
+import { configureLogger, LogLevel, setLogLevel } from './utils/logger';
+
+// Configure logger based on environment
+if (import.meta.env.PROD) {
+  // In production, only show warnings and errors
+  configureLogger({
+    minLevel: LogLevel.WARN,
+    showTimestamps: false
+  });
+  console.log('Logger configured for production: showing warnings and errors only');
+} else {
+  // In development, show all logs with timestamps
+  configureLogger({
+    minLevel: LogLevel.DEBUG,
+    showTimestamps: true
+  });
+  console.log('Logger configured for development: showing all log levels');
+  
+  // Expose logger configuration to window for debugging
+  (window as any).setLogLevel = setLogLevel;
+  console.log('Logger API available in console: window.setLogLevel(level)');
+}
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
